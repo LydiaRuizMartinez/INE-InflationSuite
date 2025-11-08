@@ -1,0 +1,3578 @@
+================================================================================
+DOCUMENTACIÓN DE CÓDIGO: report_generator.py
+================================================================================
+Fecha de generación: 08/11/2025 17:51:34
+Número de líneas: 3565
+
+CONTENIDO DEL ARCHIVO:
+----------------------------------------
+
+   1: """
+   2: Report generation system for inflation prediction analysis.
+   3: Creates visualizations, economic analysis, and technical reports.
+   4: """
+   5: 
+   6: import pandas as pd
+   7: import numpy as np
+   8: from typing import Dict, Any, Optional, List, Tuple, Union
+   9: import logging
+  10: from pathlib import Path
+  11: import yaml
+  12: import json
+  13: from datetime import datetime
+  14: import warnings
+  15: warnings.filterwarnings('ignore')
+  16: 
+  17: # Visualization imports
+  18: try:
+  19:     import matplotlib.pyplot as plt
+  20:     import matplotlib.dates as mdates
+  21:     from matplotlib.figure import Figure
+  22:     import seaborn as sns
+  23:     _MATPLOTLIB_AVAILABLE = True
+  24: except ImportError:
+  25:     _MATPLOTLIB_AVAILABLE = False
+  26: 
+  27: # PDF generation imports
+  28: try:
+  29:     from reportlab.lib.pagesizes import A4, letter
+  30:     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
+  31:     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+  32:     from reportlab.lib.units import inch
+  33:     from reportlab.lib import colors
+  34:     _REPORTLAB_AVAILABLE = True
+  35: except ImportError:
+  36:     _REPORTLAB_AVAILABLE = False
+  37: 
+  38: 
+  39: class ReportGenerator:
+  40:     """
+  41:     Handles report generation for inflation prediction system.
+  42:     
+  43:     This class creates visualizations, economic analysis, and comprehensive
+  44:     technical reports with model results and interpretations.
+  45:     """
+  46:     
+  47:     def __init__(self, config_path: str = "config/config.yaml"):
+  48:         """
+  49:         Initialize the ReportGenerator with configuration.
+  50:         
+  51:         Args:
+  52:             config_path (str): Path to configuration file
+  53:         """
+  54:         self.logger = logging.getLogger(__name__)
+  55:         self.config = self._load_config(config_path)
+  56:         
+  57:         # Report parameters from config
+  58:         self.report_params = self.config.get('reports', {})
+  59:         self.chart_dpi = self.report_params.get('chart_dpi', 300)
+  60:         self.chart_style = self.report_params.get('chart_style', 'seaborn-v0_8')
+  61:         self.pdf_format = self.report_params.get('pdf_format', 'A4')
+  62:         
+  63:         # Output paths
+  64:         self.paths = self.config.get('paths', {})
+  65:         self.reports_dir = Path(self.paths.get('reports', 'reports/'))
+  66:         self.reports_dir.mkdir(parents=True, exist_ok=True)
+  67:         
+  68:         # Set matplotlib style
+  69:         if _MATPLOTLIB_AVAILABLE:
+  70:             try:
+  71:                 plt.style.use(self.chart_style)
+  72:             except:
+  73:                 plt.style.use('default')
+  74:                 self.logger.warning(f"Chart style '{self.chart_style}' not available, using default")
+  75:     
+  76:     def _load_config(self, config_path: str) -> Dict[str, Any]:
+  77:         """
+  78:         Load configuration from YAML file.
+  79:         
+  80:         Args:
+  81:             config_path (str): Path to configuration file
+  82:             
+  83:         Returns:
+  84:             Dict[str, Any]: Configuration dictionary
+  85:         """
+  86:         try:
+  87:             with open(config_path, 'r', encoding='utf-8') as file:
+  88:                 config = yaml.safe_load(file)
+  89:                 self.logger.info(f"Loaded configuration from {config_path}")
+  90:                 return config
+  91:         except FileNotFoundError:
+  92:             self.logger.warning(f"Config file not found: {config_path}. Using default parameters.")
+  93:             return {}
+  94:         except Exception as e:
+  95:             self.logger.error(f"Error loading config: {e}. Using default parameters.")
+  96:             return {}
+  97:     
+  98:     def create_visualizations(self, data: pd.DataFrame, predictions: pd.DataFrame,
+  99:                             model_results: Optional[Dict[str, Any]] = None,
+ 100:                             output_dir: Optional[str] = None) -> Dict[str, str]:
+ 101:         """
+ 102:         Create visualizations using matplotlib/seaborn.
+ 103:         
+ 104:         Implements time series plots for historical data and predictions,
+ 105:         and model performance comparison charts.
+ 106:         
+ 107:         Args:
+ 108:             data (pd.DataFrame): Historical inflation data
+ 109:             predictions (pd.DataFrame): Model predictions
+ 110:             model_results (Dict[str, Any], optional): Model evaluation results
+ 111:             output_dir (str, optional): Output directory for plots
+ 112:             
+ 113:         Returns:
+ 114:             Dict[str, str]: Dictionary mapping plot types to file paths
+ 115:         """
+ 116:         if not _MATPLOTLIB_AVAILABLE:
+ 117:             raise ImportError("matplotlib and seaborn are required for visualizations. "
+ 118:                             "Install with: pip install matplotlib seaborn")
+ 119:         
+ 120:         if output_dir is None:
+ 121:             output_dir = self.reports_dir
+ 122:         else:
+ 123:             output_dir = Path(output_dir)
+ 124:         
+ 125:         output_dir.mkdir(parents=True, exist_ok=True)
+ 126:         
+ 127:         self.logger.info("Creating visualizations for inflation analysis")
+ 128:         
+ 129:         created_plots = {}
+ 130:         
+ 131:         try:
+ 132:             # Plot 1: Historical data and predictions time series
+ 133:             plot_path = self._create_time_series_plot(data, predictions, output_dir)
+ 134:             created_plots['time_series'] = plot_path
+ 135:             
+ 136:             # Plot 2: Model performance comparison
+ 137:             if model_results:
+ 138:                 plot_path = self._create_model_comparison_plot(model_results, output_dir)
+ 139:                 created_plots['model_comparison'] = plot_path
+ 140:             
+ 141:             # Plot 3: Prediction distribution and statistics
+ 142:             plot_path = self._create_prediction_distribution_plot(predictions, output_dir)
+ 143:             created_plots['prediction_distribution'] = plot_path
+ 144:             
+ 145:             # Plot 4: Confidence intervals analysis
+ 146:             if 'confidence_lower' in predictions.columns and 'confidence_upper' in predictions.columns:
+ 147:                 plot_path = self._create_confidence_intervals_plot(predictions, output_dir)
+ 148:                 created_plots['confidence_intervals'] = plot_path
+ 149:             
+ 150:             # Plot 5: Historical inflation analysis
+ 151:             plot_path = self._create_historical_analysis_plot(data, output_dir)
+ 152:             created_plots['historical_analysis'] = plot_path
+ 153:             
+ 154:             # Plot 6: Seasonal decomposition if enough data
+ 155:             if len(data) >= 24:  # At least 2 years of data
+ 156:                 plot_path = self._create_seasonal_decomposition_plot(data, output_dir)
+ 157:                 created_plots['seasonal_decomposition'] = plot_path
+ 158:             
+ 159:             self.logger.info(f"Created {len(created_plots)} visualization plots")
+ 160:             return created_plots
+ 161:             
+ 162:         except Exception as e:
+ 163:             self.logger.error(f"Error creating visualizations: {e}")
+ 164:             raise
+ 165:     
+ 166:     def _create_time_series_plot(self, data: pd.DataFrame, predictions: pd.DataFrame,
+ 167:                                 output_dir: Path) -> str:
+ 168:         """Create time series plot for historical data and predictions."""
+ 169:         fig, ax = plt.subplots(figsize=(14, 8))
+ 170: 
+ 171:         def _to_naive_datetime(series: pd.Series) -> pd.DatetimeIndex:
+ 172:             dt = pd.to_datetime(series, errors='coerce', utc=True)
+ 173:             # convert tz-aware to naive for consistent plotting
+ 174:             try:
+ 175:                 dt = dt.tz_convert(None)
+ 176:             except Exception:
+ 177:                 pass
+ 178:             return dt
+ 179: 
+ 180:         # Plot historical data
+ 181:         if isinstance(data.index, pd.DatetimeIndex):
+ 182:             # Ensure naive datetime index
+ 183:             hist_dates = data.index.tz_convert(None) if getattr(data.index, 'tz', None) is not None else data.index
+ 184:         elif 'fecha' in data.columns:
+ 185:             hist_dates = _to_naive_datetime(data['fecha'])
+ 186:         else:
+ 187:             hist_dates = pd.date_range(start='2010-01-01', periods=len(data), freq='M')
+ 188:         
+ 189:         # Find inflation rate column
+ 190:         inflation_col = self._find_inflation_column(data)
+ 191:         if inflation_col:
+ 192:             ax.plot(hist_dates, data[inflation_col], 
+ 193:                    label='Inflación Histórica', linewidth=2, color='#2E86AB', alpha=0.8)
+ 194:         
+ 195:         # Plot predictions
+ 196:         if 'fecha' in predictions.columns:
+ 197:             pred_dates = _to_naive_datetime(predictions['fecha'])
+ 198:         else:
+ 199:             last_date = hist_dates[-1] if len(hist_dates) > 0 else pd.Timestamp('2024-01-01')
+ 200:             pred_dates = pd.date_range(start=last_date + pd.DateOffset(months=1), 
+ 201:                                      periods=len(predictions), freq='M')
+ 202:         
+ 203:         ax.plot(pred_dates, predictions['predicted_inflation'], 
+ 204:                label='Predicciones', linewidth=2.5, color='#A23B72', marker='o', markersize=4)
+ 205:         
+ 206:         # Add confidence intervals
+ 207:         if 'confidence_lower' in predictions.columns and 'confidence_upper' in predictions.columns:
+ 208:             ax.fill_between(pred_dates, 
+ 209:                            predictions['confidence_lower'], 
+ 210:                            predictions['confidence_upper'],
+ 211:                            alpha=0.3, color='#A23B72', 
+ 212:                            label=f'Intervalo de Confianza ({int(predictions.get("confidence_level", [0.95])[0]*100)}%)')
+ 213:         
+ 214:         # Formatting
+ 215:         ax.set_xlabel('Fecha', fontsize=12)
+ 216:         ax.set_ylabel('Tasa de Inflación (%)', fontsize=12)
+ 217:         ax.set_title('Evolución de la Inflación en España: Histórico y Predicciones', 
+ 218:                     fontsize=14, fontweight='bold', pad=20)
+ 219:         ax.legend(fontsize=11)
+ 220:         ax.grid(True, alpha=0.3)
+ 221:         
+ 222:         # Format x-axis
+ 223:         ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+ 224:         ax.xaxis.set_major_locator(mdates.MonthLocator(interval=6))
+ 225:         plt.xticks(rotation=45)
+ 226:         
+ 227:         # Add horizontal line at 0%
+ 228:         ax.axhline(y=0, color='black', linestyle='--', alpha=0.5, linewidth=0.8)
+ 229:         
+ 230:         plt.tight_layout()
+ 231:         plot_path = output_dir / "inflacion_historica_predicciones.png"
+ 232:         plt.savefig(plot_path, dpi=self.chart_dpi, bbox_inches='tight')
+ 233:         plt.close()
+ 234:         
+ 235:         return str(plot_path)
+ 236:     
+ 237:     def _create_model_comparison_plot(self, model_results: Dict[str, Any], 
+ 238:                                     output_dir: Path) -> str:
+ 239:         """Create model performance comparison chart."""
+ 240:         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+ 241:         
+ 242:         # Extract model performance data
+ 243:         models = []
+ 244:         mae_scores = []
+ 245:         rmse_scores = []
+ 246:         mape_scores = []
+ 247:         
+ 248:         for model_name, results in model_results.items():
+ 249:             if results.get('status') == 'success':
+ 250:                 metrics = results.get('metrics', {})
+ 251:                 models.append(model_name.replace('_', ' ').title())
+ 252:                 mae_scores.append(metrics.get('MAE', 0))
+ 253:                 rmse_scores.append(metrics.get('RMSE', 0))
+ 254:                 mape_scores.append(metrics.get('MAPE', 0))
+ 255:         
+ 256:         if not models:
+ 257:             # Create empty plot with message
+ 258:             fig, ax = plt.subplots(figsize=(10, 6))
+ 259:             ax.text(0.5, 0.5, 'No hay resultados de modelos disponibles', 
+ 260:                    ha='center', va='center', fontsize=14)
+ 261:             ax.set_xlim(0, 1)
+ 262:             ax.set_ylim(0, 1)
+ 263:             ax.axis('off')
+ 264:         else:
+ 265:             # Colors for different models
+ 266:             colors = ['#2E86AB', '#A23B72', '#F18F01'][:len(models)]
+ 267:             
+ 268:             # MAE comparison
+ 269:             bars1 = axes[0].bar(models, mae_scores, color=colors, alpha=0.7)
+ 270:             axes[0].set_title('Error Absoluto Medio (MAE)', fontweight='bold')
+ 271:             axes[0].set_ylabel('MAE')
+ 272:             axes[0].tick_params(axis='x', rotation=45)
+ 273:             
+ 274:             # Add value labels on bars
+ 275:             for bar, value in zip(bars1, mae_scores):
+ 276:                 axes[0].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
+ 277:                            f'{value:.3f}', ha='center', va='bottom', fontweight='bold')
+ 278:             
+ 279:             # RMSE comparison
+ 280:             bars2 = axes[1].bar(models, rmse_scores, color=colors, alpha=0.7)
+ 281:             axes[1].set_title('Raíz del Error Cuadrático Medio (RMSE)', fontweight='bold')
+ 282:             axes[1].set_ylabel('RMSE')
+ 283:             axes[1].tick_params(axis='x', rotation=45)
+ 284:             
+ 285:             for bar, value in zip(bars2, rmse_scores):
+ 286:                 axes[1].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
+ 287:                            f'{value:.3f}', ha='center', va='bottom', fontweight='bold')
+ 288:             
+ 289:             # MAPE comparison
+ 290:             bars3 = axes[2].bar(models, mape_scores, color=colors, alpha=0.7)
+ 291:             axes[2].set_title('Error Porcentual Absoluto Medio (MAPE)', fontweight='bold')
+ 292:             axes[2].set_ylabel('MAPE (%)')
+ 293:             axes[2].tick_params(axis='x', rotation=45)
+ 294:             
+ 295:             for bar, value in zip(bars3, mape_scores):
+ 296:                 axes[2].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
+ 297:                            f'{value:.1f}%', ha='center', va='bottom', fontweight='bold')
+ 298:         
+ 299:         plt.suptitle('Comparación de Rendimiento de Modelos', fontsize=16, fontweight='bold')
+ 300:         plt.tight_layout()
+ 301:         
+ 302:         plot_path = output_dir / "comparacion_modelos.png"
+ 303:         plt.savefig(plot_path, dpi=self.chart_dpi, bbox_inches='tight')
+ 304:         plt.close()
+ 305:         
+ 306:         return str(plot_path)
+ 307:     
+ 308:     def _create_prediction_distribution_plot(self, predictions: pd.DataFrame, 
+ 309:                                            output_dir: Path) -> str:
+ 310:         """Create prediction distribution and statistics plot."""
+ 311:         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+ 312:         
+ 313:         pred_values = predictions['predicted_inflation'].values
+ 314:         
+ 315:         # Histogram
+ 316:         ax1.hist(pred_values, bins=15, alpha=0.7, color='#A23B72', edgecolor='black')
+ 317:         ax1.set_xlabel('Tasa de Inflación Predicha (%)')
+ 318:         ax1.set_ylabel('Frecuencia')
+ 319:         ax1.set_title('Distribución de Predicciones de Inflación')
+ 320:         ax1.grid(True, alpha=0.3)
+ 321:         
+ 322:         # Add statistics
+ 323:         mean_pred = np.mean(pred_values)
+ 324:         std_pred = np.std(pred_values)
+ 325:         ax1.axvline(mean_pred, color='red', linestyle='--', linewidth=2, 
+ 326:                    label=f'Media: {mean_pred:.2f}%')
+ 327:         ax1.axvline(mean_pred + std_pred, color='orange', linestyle=':', alpha=0.7, 
+ 328:                    label=f'+1σ: {mean_pred + std_pred:.2f}%')
+ 329:         ax1.axvline(mean_pred - std_pred, color='orange', linestyle=':', alpha=0.7, 
+ 330:                    label=f'-1σ: {mean_pred - std_pred:.2f}%')
+ 331:         ax1.legend()
+ 332:         
+ 333:         # Box plot
+ 334:         ax2.boxplot(pred_values, vert=True, patch_artist=True,
+ 335:                    boxprops=dict(facecolor='#A23B72', alpha=0.7),
+ 336:                    medianprops=dict(color='red', linewidth=2))
+ 337:         ax2.set_ylabel('Tasa de Inflación Predicha (%)')
+ 338:         ax2.set_title('Estadísticas de Predicciones')
+ 339:         ax2.grid(True, alpha=0.3)
+ 340:         
+ 341:         # Add statistics text
+ 342:         stats_text = f"""Estadísticas:
+ 343: Media: {mean_pred:.2f}%
+ 344: Mediana: {np.median(pred_values):.2f}%
+ 345: Desv. Estándar: {std_pred:.2f}%
+ 346: Mín: {np.min(pred_values):.2f}%
+ 347: Máx: {np.max(pred_values):.2f}%"""
+ 348:         
+ 349:         ax2.text(1.1, 0.5, stats_text, transform=ax2.transAxes, 
+ 350:                 bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.8),
+ 351:                 verticalalignment='center')
+ 352:         
+ 353:         plt.tight_layout()
+ 354:         
+ 355:         plot_path = output_dir / "distribucion_predicciones.png"
+ 356:         plt.savefig(plot_path, dpi=self.chart_dpi, bbox_inches='tight')
+ 357:         plt.close()
+ 358:         
+ 359:         return str(plot_path)    
+ 360: 
+ 361:     def _create_confidence_intervals_plot(self, predictions: pd.DataFrame, 
+ 362:                                         output_dir: Path) -> str:
+ 363:         """Create confidence intervals analysis plot."""
+ 364:         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+ 365:         
+ 366:         # Plot 1: Confidence interval width over time
+ 367:         ci_width = predictions['confidence_upper'] - predictions['confidence_lower']
+ 368:         
+ 369:         if 'fecha' in predictions.columns:
+ 370:             dates = pd.to_datetime(predictions['fecha'], errors='coerce', utc=True)
+ 371:             try:
+ 372:                 dates = dates.tz_convert(None)
+ 373:             except Exception:
+ 374:                 pass
+ 375:             ax1.plot(dates, ci_width, linewidth=2, color='#F18F01', marker='o', markersize=4)
+ 376:             ax1.set_xlabel('Fecha')
+ 377:             ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+ 378:             ax1.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+ 379:             plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45)
+ 380:         else:
+ 381:             ax1.plot(ci_width, linewidth=2, color='#F18F01', marker='o', markersize=4)
+ 382:             ax1.set_xlabel('Período de Predicción')
+ 383:         
+ 384:         ax1.set_ylabel('Ancho del Intervalo de Confianza (%)')
+ 385:         ax1.set_title('Evolución de la Incertidumbre en las Predicciones')
+ 386:         ax1.grid(True, alpha=0.3)
+ 387:         
+ 388:         # Add mean line
+ 389:         mean_width = np.mean(ci_width)
+ 390:         ax1.axhline(y=mean_width, color='red', linestyle='--', alpha=0.7,
+ 391:                    label=f'Ancho Promedio: {mean_width:.2f}%')
+ 392:         ax1.legend()
+ 393:         
+ 394:         # Plot 2: Predictions with confidence bands
+ 395:         if 'fecha' in predictions.columns:
+ 396:             dates = pd.to_datetime(predictions['fecha'], errors='coerce', utc=True)
+ 397:             try:
+ 398:                 dates = dates.tz_convert(None)
+ 399:             except Exception:
+ 400:                 pass
+ 401:             ax2.plot(dates, predictions['predicted_inflation'], 
+ 402:                     label='Predicción', linewidth=2, color='#2E86AB')
+ 403:             ax2.fill_between(dates, 
+ 404:                            predictions['confidence_lower'], 
+ 405:                            predictions['confidence_upper'],
+ 406:                            alpha=0.3, color='#2E86AB', 
+ 407:                            label='Intervalo de Confianza')
+ 408:             ax2.set_xlabel('Fecha')
+ 409:             ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+ 410:             ax2.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+ 411:             plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45)
+ 412:         else:
+ 413:             ax2.plot(predictions['predicted_inflation'], 
+ 414:                     label='Predicción', linewidth=2, color='#2E86AB')
+ 415:             ax2.fill_between(range(len(predictions)), 
+ 416:                            predictions['confidence_lower'], 
+ 417:                            predictions['confidence_upper'],
+ 418:                            alpha=0.3, color='#2E86AB', 
+ 419:                            label='Intervalo de Confianza')
+ 420:             ax2.set_xlabel('Período de Predicción')
+ 421:         
+ 422:         ax2.set_ylabel('Tasa de Inflación (%)')
+ 423:         ax2.set_title('Predicciones con Intervalos de Confianza')
+ 424:         ax2.legend()
+ 425:         ax2.grid(True, alpha=0.3)
+ 426:         
+ 427:         plt.tight_layout()
+ 428:         
+ 429:         plot_path = output_dir / "intervalos_confianza.png"
+ 430:         plt.savefig(plot_path, dpi=self.chart_dpi, bbox_inches='tight')
+ 431:         plt.close()
+ 432:         
+ 433:         return str(plot_path)
+ 434:     
+ 435:     def _create_historical_analysis_plot(self, data: pd.DataFrame, output_dir: Path) -> str:
+ 436:         """Create historical inflation analysis plot."""
+ 437:         fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+ 438: 
+ 439:         # Find inflation column
+ 440:         inflation_col = self._find_inflation_column(data)
+ 441:         if not inflation_col:
+ 442:             # Create empty plot with message
+ 443:             fig, ax = plt.subplots(figsize=(10, 6))
+ 444:             ax.text(0.5, 0.5, 'No se encontró columna de inflación en los datos históricos', 
+ 445:                    ha='center', va='center', fontsize=14)
+ 446:             ax.set_xlim(0, 1)
+ 447:             ax.set_ylim(0, 1)
+ 448:             ax.axis('off')
+ 449:             plot_path = output_dir / "analisis_historico.png"
+ 450:             plt.savefig(plot_path, dpi=self.chart_dpi, bbox_inches='tight')
+ 451:             plt.close()
+ 452:             return str(plot_path)
+ 453: 
+ 454:         # Build aligned DataFrame with dates and inflation values
+ 455:         def _to_naive_datetime(series: pd.Series) -> pd.DatetimeIndex:
+ 456:             dt = pd.to_datetime(series, errors='coerce', utc=True)
+ 457:             try:
+ 458:                 dt = dt.tz_convert(None)
+ 459:             except Exception:
+ 460:                 pass
+ 461:             return dt
+ 462: 
+ 463:         if isinstance(data.index, pd.DatetimeIndex):
+ 464:             dt = data.index.tz_convert(None) if getattr(data.index, 'tz', None) is not None else data.index
+ 465:         elif 'fecha' in data.columns:
+ 466:             dt = _to_naive_datetime(data['fecha'])
+ 467:         else:
+ 468:             dt = pd.date_range(start='2010-01-01', periods=len(data), freq='M')
+ 469: 
+ 470:         df_plot = pd.DataFrame({
+ 471:             'dt': dt,
+ 472:             'inflation': data[inflation_col]
+ 473:         })
+ 474:         # Drop rows without date or inflation
+ 475:         df_plot = df_plot.dropna(subset=['dt', 'inflation'])
+ 476:         df_plot = df_plot.sort_values('dt')
+ 477: 
+ 478:         # Plot 1: Time series
+ 479:         axes[0, 0].plot(df_plot['dt'], df_plot['inflation'], linewidth=1.5, color='#2E86AB')
+ 480:         axes[0, 0].set_title('Serie Temporal de Inflación')
+ 481:         axes[0, 0].set_ylabel('Tasa de Inflación (%)')
+ 482:         axes[0, 0].grid(True, alpha=0.3)
+ 483:         axes[0, 0].tick_params(axis='x', rotation=45)
+ 484: 
+ 485:         # Plot 2: Distribution
+ 486:         axes[0, 1].hist(df_plot['inflation'], bins=20, alpha=0.7, color='#A23B72', edgecolor='black')
+ 487:         axes[0, 1].set_title('Distribución Histórica de Inflación')
+ 488:         axes[0, 1].set_xlabel('Tasa de Inflación (%)')
+ 489:         axes[0, 1].set_ylabel('Frecuencia')
+ 490:         axes[0, 1].grid(True, alpha=0.3)
+ 491: 
+ 492:         # Add statistics
+ 493:         mean_inf = float(np.mean(df_plot['inflation'])) if len(df_plot) else 0.0
+ 494:         axes[0, 1].axvline(mean_inf, color='red', linestyle='--', 
+ 495:                           label=f'Media: {mean_inf:.2f}%')
+ 496:         axes[0, 1].legend()
+ 497: 
+ 498:         # Plot 3: Monthly seasonality (if enough data)
+ 499:         if len(df_plot) >= 12:
+ 500:             monthly_avg = df_plot.groupby(df_plot['dt'].dt.month)['inflation'].mean()
+ 501:             axes[1, 0].bar(monthly_avg.index, monthly_avg.values, 
+ 502:                           color='#F18F01', alpha=0.7)
+ 503:             axes[1, 0].set_title('Patrón Estacional Mensual')
+ 504:             axes[1, 0].set_xlabel('Mes')
+ 505:             axes[1, 0].set_ylabel('Inflación Promedio (%)')
+ 506:             axes[1, 0].set_xticks(range(1, 13))
+ 507:             axes[1, 0].grid(True, alpha=0.3)
+ 508: 
+ 509:         # Plot 4: Rolling statistics
+ 510:         if len(df_plot) >= 12:
+ 511:             rolling_mean = df_plot['inflation'].rolling(window=12).mean()
+ 512:             rolling_std = df_plot['inflation'].rolling(window=12).std()
+ 513:             axes[1, 1].plot(df_plot['dt'], df_plot['inflation'], alpha=0.3, color='gray', label='Datos')
+ 514:             axes[1, 1].plot(df_plot['dt'], rolling_mean, linewidth=2, color='#2E86AB', 
+ 515:                            label='Media Móvil (12m)')
+ 516:             axes[1, 1].fill_between(df_plot['dt'], 
+ 517:                                    rolling_mean - rolling_std, 
+ 518:                                    rolling_mean + rolling_std,
+ 519:                                    alpha=0.2, color='#2E86AB', 
+ 520:                                    label='±1 Desv. Estándar')
+ 521:             axes[1, 1].set_title('Tendencia y Volatilidad')
+ 522:             axes[1, 1].set_ylabel('Tasa de Inflación (%)')
+ 523:             axes[1, 1].legend()
+ 524:             axes[1, 1].grid(True, alpha=0.3)
+ 525:             axes[1, 1].tick_params(axis='x', rotation=45)
+ 526: 
+ 527:         plt.tight_layout()
+ 528: 
+ 529:         plot_path = output_dir / "analisis_historico.png"
+ 530:         plt.savefig(plot_path, dpi=self.chart_dpi, bbox_inches='tight')
+ 531:         plt.close()
+ 532: 
+ 533:         return str(plot_path)
+ 534:     
+ 535:     def _create_seasonal_decomposition_plot(self, data: pd.DataFrame, output_dir: Path) -> str:
+ 536:         """Create seasonal decomposition plot."""
+ 537:         try:
+ 538:             from statsmodels.tsa.seasonal import seasonal_decompose
+ 539:         except ImportError:
+ 540:             self.logger.warning("statsmodels not available for seasonal decomposition")
+ 541:             return ""
+ 542:         
+ 543:         # Find inflation column
+ 544:         inflation_col = self._find_inflation_column(data)
+ 545:         if not inflation_col:
+ 546:             return ""
+ 547:         
+ 548:         inflation_data = data[inflation_col].dropna()
+ 549:         
+ 550:         if len(inflation_data) < 24:  # Need at least 2 years
+ 551:             return ""
+ 552:         
+ 553:         try:
+ 554:             # Perform seasonal decomposition
+ 555:             decomposition = seasonal_decompose(inflation_data, model='additive', period=12)
+ 556:             
+ 557:             fig, axes = plt.subplots(4, 1, figsize=(14, 12))
+ 558:             
+ 559:             # Original series
+ 560:             axes[0].plot(decomposition.observed, linewidth=1.5, color='#2E86AB')
+ 561:             axes[0].set_title('Serie Original')
+ 562:             axes[0].set_ylabel('Inflación (%)')
+ 563:             axes[0].grid(True, alpha=0.3)
+ 564:             
+ 565:             # Trend
+ 566:             axes[1].plot(decomposition.trend, linewidth=2, color='#A23B72')
+ 567:             axes[1].set_title('Tendencia')
+ 568:             axes[1].set_ylabel('Inflación (%)')
+ 569:             axes[1].grid(True, alpha=0.3)
+ 570:             
+ 571:             # Seasonal
+ 572:             axes[2].plot(decomposition.seasonal, linewidth=1.5, color='#F18F01')
+ 573:             axes[2].set_title('Componente Estacional')
+ 574:             axes[2].set_ylabel('Inflación (%)')
+ 575:             axes[2].grid(True, alpha=0.3)
+ 576:             
+ 577:             # Residual
+ 578:             axes[3].plot(decomposition.resid, linewidth=1, color='gray')
+ 579:             axes[3].set_title('Residuos')
+ 580:             axes[3].set_ylabel('Inflación (%)')
+ 581:             axes[3].set_xlabel('Fecha')
+ 582:             axes[3].grid(True, alpha=0.3)
+ 583:             
+ 584:             plt.suptitle('Descomposición Estacional de la Inflación', 
+ 585:                         fontsize=16, fontweight='bold')
+ 586:             plt.tight_layout()
+ 587:             
+ 588:             plot_path = output_dir / "descomposicion_estacional.png"
+ 589:             plt.savefig(plot_path, dpi=self.chart_dpi, bbox_inches='tight')
+ 590:             plt.close()
+ 591:             
+ 592:             return str(plot_path)
+ 593:             
+ 594:         except Exception as e:
+ 595:             self.logger.warning(f"Error in seasonal decomposition: {e}")
+ 596:             return ""
+ 597:     
+ 598:     def _find_inflation_column(self, data: pd.DataFrame) -> Optional[str]:
+ 599:         """Find the inflation rate column in the data."""
+ 600:         # Priority order for inflation column detection
+ 601:         priority_keywords = [
+ 602:             'inflation_rate_annual', 'inflacion_anual', 'ipc_annual_rate', 
+ 603:             'annual_rate', 'inflation_rate', 'inflacion', 'rate'
+ 604:         ]
+ 605:         
+ 606:         for keyword in priority_keywords:
+ 607:             matching_cols = [col for col in data.columns if keyword in col.lower()]
+ 608:             if matching_cols:
+ 609:                 return matching_cols[0]
+ 610:         
+ 611:         # Fallback to numeric columns that might contain inflation data
+ 612:         numeric_cols = data.select_dtypes(include=[np.number]).columns
+ 613:         for col in numeric_cols:
+ 614:             if any(word in col.lower() for word in ['ipc', 'inflacion', 'inflation']):
+ 615:                 return col
+ 616:         
+ 617:         return None
+ 618:     
+ 619:     def generate_economic_analysis(self, data: pd.DataFrame, predictions: pd.DataFrame,
+ 620:                                  model_results: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+ 621:         """
+ 622:         Generate economic analysis with interpretation.
+ 623:         
+ 624:         Implements interpretation of results and economic conclusions
+ 625:         about inflation trends identified in the data and predictions.
+ 626:         
+ 627:         Args:
+ 628:             data (pd.DataFrame): Historical inflation data
+ 629:             predictions (pd.DataFrame): Model predictions
+ 630:             model_results (Dict[str, Any], optional): Model evaluation results
+ 631:             
+ 632:         Returns:
+ 633:             Dict[str, Any]: Economic analysis with interpretations and conclusions
+ 634:         """
+ 635:         self.logger.info("Generating economic analysis and interpretation")
+ 636:         
+ 637:         analysis = {
+ 638:             'timestamp': datetime.now().isoformat(),
+ 639:             'historical_analysis': {},
+ 640:             'prediction_analysis': {},
+ 641:             'economic_interpretation': {},
+ 642:             'conclusions': [],
+ 643:             'recommendations': []
+ 644:         }
+ 645:         
+ 646:         try:
+ 647:             # Historical data analysis
+ 648:             analysis['historical_analysis'] = self._analyze_historical_data(data)
+ 649:             
+ 650:             # Prediction analysis
+ 651:             analysis['prediction_analysis'] = self._analyze_predictions(predictions)
+ 652:             
+ 653:             # Economic interpretation
+ 654:             analysis['economic_interpretation'] = self._generate_economic_interpretation(
+ 655:                 analysis['historical_analysis'], 
+ 656:                 analysis['prediction_analysis'],
+ 657:                 model_results
+ 658:             )
+ 659:             
+ 660:             # Generate conclusions
+ 661:             analysis['conclusions'] = self._generate_conclusions(
+ 662:                 analysis['historical_analysis'],
+ 663:                 analysis['prediction_analysis'],
+ 664:                 analysis['economic_interpretation']
+ 665:             )
+ 666:             
+ 667:             # Generate recommendations
+ 668:             analysis['recommendations'] = self._generate_recommendations(analysis)
+ 669:             
+ 670:             # Save analysis to JSON
+ 671:             analysis_path = self.reports_dir / "economic_analysis.json"
+ 672:             with open(analysis_path, 'w', encoding='utf-8') as f:
+ 673:                 json.dump(analysis, f, indent=2, ensure_ascii=False)
+ 674:             
+ 675:             self.logger.info(f"Economic analysis saved to {analysis_path}")
+ 676:             return analysis
+ 677:             
+ 678:         except Exception as e:
+ 679:             self.logger.error(f"Error generating economic analysis: {e}")
+ 680:             raise
+ 681:     
+ 682:     def _analyze_historical_data(self, data: pd.DataFrame) -> Dict[str, Any]:
+ 683:         """Analyze historical inflation data."""
+ 684:         inflation_col = self._find_inflation_column(data)
+ 685:         if not inflation_col:
+ 686:             return {'error': 'No inflation column found'}
+ 687:         
+ 688:         inflation_data = data[inflation_col].dropna()
+ 689:         
+ 690:         # Basic statistics
+ 691:         stats = {
+ 692:             'mean': float(np.mean(inflation_data)),
+ 693:             'median': float(np.median(inflation_data)),
+ 694:             'std': float(np.std(inflation_data)),
+ 695:             'min': float(np.min(inflation_data)),
+ 696:             'max': float(np.max(inflation_data)),
+ 697:             'count': len(inflation_data)
+ 698:         }
+ 699:         
+ 700:         # Periods analysis
+ 701:         periods = {
+ 702:             'high_inflation_periods': len(inflation_data[inflation_data > 3.0]),
+ 703:             'low_inflation_periods': len(inflation_data[inflation_data < 1.0]),
+ 704:             'deflation_periods': len(inflation_data[inflation_data < 0]),
+ 705:             'stable_periods': len(inflation_data[(inflation_data >= 1.0) & (inflation_data <= 3.0)])
+ 706:         }
+ 707:         
+ 708:         # Volatility analysis
+ 709:         volatility = {
+ 710:             'coefficient_variation': stats['std'] / abs(stats['mean']) if stats['mean'] != 0 else 0,
+ 711:             'range': stats['max'] - stats['min'],
+ 712:             'iqr': float(np.percentile(inflation_data, 75) - np.percentile(inflation_data, 25))
+ 713:         }
+ 714:         
+ 715:         # Trend analysis
+ 716:         if len(inflation_data) >= 12:
+ 717:             recent_12m = inflation_data.tail(12)
+ 718:             previous_12m = inflation_data.tail(24).head(12) if len(inflation_data) >= 24 else inflation_data.head(12)
+ 719:             
+ 720:             trend = {
+ 721:                 'recent_12m_avg': float(np.mean(recent_12m)),
+ 722:                 'previous_12m_avg': float(np.mean(previous_12m)),
+ 723:                 'trend_direction': 'increasing' if np.mean(recent_12m) > np.mean(previous_12m) else 'decreasing',
+ 724:                 'trend_magnitude': float(abs(np.mean(recent_12m) - np.mean(previous_12m)))
+ 725:             }
+ 726:         else:
+ 727:             trend = {'insufficient_data': True}
+ 728:         
+ 729:         return {
+ 730:             'statistics': stats,
+ 731:             'periods': periods,
+ 732:             'volatility': volatility,
+ 733:             'trend': trend
+ 734:         }
+ 735:     
+ 736:     def _analyze_predictions(self, predictions: pd.DataFrame) -> Dict[str, Any]:
+ 737:         """Analyze prediction results."""
+ 738:         pred_values = predictions['predicted_inflation'].values
+ 739:         
+ 740:         # Basic prediction statistics
+ 741:         pred_stats = {
+ 742:             'mean': float(np.mean(pred_values)),
+ 743:             'median': float(np.median(pred_values)),
+ 744:             'std': float(np.std(pred_values)),
+ 745:             'min': float(np.min(pred_values)),
+ 746:             'max': float(np.max(pred_values)),
+ 747:             'count': len(pred_values)
+ 748:         }
+ 749:         
+ 750:         # Prediction trajectory
+ 751:         trajectory = {
+ 752:             'initial_prediction': float(pred_values[0]) if len(pred_values) > 0 else 0,
+ 753:             'final_prediction': float(pred_values[-1]) if len(pred_values) > 0 else 0,
+ 754:             'overall_trend': 'increasing' if pred_values[-1] > pred_values[0] else 'decreasing' if len(pred_values) > 1 else 'stable',
+ 755:             'volatility': float(np.std(np.diff(pred_values))) if len(pred_values) > 1 else 0
+ 756:         }
+ 757:         
+ 758:         # Confidence analysis
+ 759:         confidence_analysis = {}
+ 760:         if 'confidence_lower' in predictions.columns and 'confidence_upper' in predictions.columns:
+ 761:             ci_width = predictions['confidence_upper'] - predictions['confidence_lower']
+ 762:             confidence_analysis = {
+ 763:                 'avg_confidence_width': float(np.mean(ci_width)),
+ 764:                 'max_confidence_width': float(np.max(ci_width)),
+ 765:                 'min_confidence_width': float(np.min(ci_width)),
+ 766:                 'confidence_trend': 'increasing' if ci_width.iloc[-1] > ci_width.iloc[0] else 'decreasing' if len(ci_width) > 1 else 'stable'
+ 767:             }
+ 768:         
+ 769:         # Economic classification
+ 770:         economic_periods = {
+ 771:             'high_inflation_months': len(pred_values[pred_values > 3.0]),
+ 772:             'moderate_inflation_months': len(pred_values[(pred_values >= 1.0) & (pred_values <= 3.0)]),
+ 773:             'low_inflation_months': len(pred_values[(pred_values >= 0) & (pred_values < 1.0)]),
+ 774:             'deflation_months': len(pred_values[pred_values < 0])
+ 775:         }
+ 776:         
+ 777:         return {
+ 778:             'statistics': pred_stats,
+ 779:             'trajectory': trajectory,
+ 780:             'confidence': confidence_analysis,
+ 781:             'economic_periods': economic_periods
+ 782:         }
+ 783:     
+ 784:     def _generate_economic_interpretation(self, historical: Dict[str, Any], 
+ 785:                                         predictions: Dict[str, Any],
+ 786:                                         model_results: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+ 787:         """Generate economic interpretation of results."""
+ 788:         interpretation = {
+ 789:             'inflation_regime': self._classify_inflation_regime(historical, predictions),
+ 790:             'economic_outlook': self._assess_economic_outlook(predictions),
+ 791:             'policy_implications': self._assess_policy_implications(historical, predictions),
+ 792:             'risk_assessment': self._assess_risks(historical, predictions),
+ 793:             'model_reliability': self._assess_model_reliability(model_results) if model_results else {}
+ 794:         }
+ 795:         
+ 796:         return interpretation
+ 797:     
+ 798:     def _classify_inflation_regime(self, historical: Dict[str, Any], predictions: Dict[str, Any]) -> Dict[str, str]:
+ 799:         """Classify the inflation regime based on historical and predicted data."""
+ 800:         hist_mean = historical.get('statistics', {}).get('mean', 0)
+ 801:         pred_mean = predictions.get('statistics', {}).get('mean', 0)
+ 802:         
+ 803:         # Historical regime
+ 804:         if hist_mean < 0:
+ 805:             hist_regime = "deflacionario"
+ 806:         elif hist_mean < 1:
+ 807:             hist_regime = "inflación muy baja"
+ 808:         elif hist_mean <= 2:
+ 809:             hist_regime = "inflación baja y estable"
+ 810:         elif hist_mean <= 4:
+ 811:             hist_regime = "inflación moderada"
+ 812:         else:
+ 813:             hist_regime = "inflación alta"
+ 814:         
+ 815:         # Predicted regime
+ 816:         if pred_mean < 0:
+ 817:             pred_regime = "deflacionario"
+ 818:         elif pred_mean < 1:
+ 819:             pred_regime = "inflación muy baja"
+ 820:         elif pred_mean <= 2:
+ 821:             pred_regime = "inflación baja y estable"
+ 822:         elif pred_mean <= 4:
+ 823:             pred_regime = "inflación moderada"
+ 824:         else:
+ 825:             pred_regime = "inflación alta"
+ 826:         
+ 827:         return {
+ 828:             'historical_regime': hist_regime,
+ 829:             'predicted_regime': pred_regime,
+ 830:             'regime_change': 'Sí' if hist_regime != pred_regime else 'No'
+ 831:         }
+ 832:     
+ 833:     def _assess_economic_outlook(self, predictions: Dict[str, Any]) -> Dict[str, str]:
+ 834:         """Assess economic outlook based on predictions."""
+ 835:         trajectory = predictions.get('trajectory', {})
+ 836:         stats = predictions.get('statistics', {})
+ 837:         
+ 838:         trend = trajectory.get('overall_trend', 'stable')
+ 839:         volatility = trajectory.get('volatility', 0)
+ 840:         mean_pred = stats.get('mean', 0)
+ 841:         
+ 842:         if trend == 'increasing' and mean_pred > 3:
+ 843:             outlook = "Presiones inflacionarias crecientes"
+ 844:             risk_level = "Alto"
+ 845:         elif trend == 'decreasing' and mean_pred < 1:
+ 846:             outlook = "Riesgo de deflación"
+ 847:             risk_level = "Moderado-Alto"
+ 848:         elif 1 <= mean_pred <= 2:
+ 849:             outlook = "Estabilidad de precios"
+ 850:             risk_level = "Bajo"
+ 851:         else:
+ 852:             outlook = "Inflación moderada"
+ 853:             risk_level = "Moderado"
+ 854:         
+ 855:         volatility_assessment = "Alta" if volatility > 0.5 else "Moderada" if volatility > 0.2 else "Baja"
+ 856:         
+ 857:         return {
+ 858:             'outlook': outlook,
+ 859:             'risk_level': risk_level,
+ 860:             'volatility_assessment': volatility_assessment,
+ 861:             'stability': "Estable" if volatility < 0.3 else "Inestable"
+ 862:         }
+ 863:     
+ 864:     def _assess_policy_implications(self, historical: Dict[str, Any], predictions: Dict[str, Any]) -> List[str]:
+ 865:         """Assess monetary policy implications."""
+ 866:         implications = []
+ 867:         
+ 868:         pred_mean = predictions.get('statistics', {}).get('mean', 0)
+ 869:         trend = predictions.get('trajectory', {}).get('overall_trend', 'stable')
+ 870:         
+ 871:         # ECB target is around 2%
+ 872:         if pred_mean < 1:
+ 873:             implications.append("Política monetaria expansiva podría ser necesaria para estimular la inflación")
+ 874:         elif pred_mean > 3:
+ 875:             implications.append("Política monetaria restrictiva podría ser necesaria para controlar la inflación")
+ 876:         else:
+ 877:             implications.append("Inflación cerca del objetivo del BCE (2%), política monetaria neutral apropiada")
+ 878:         
+ 879:         if trend == 'increasing':
+ 880:             implications.append("Tendencia creciente sugiere vigilancia de presiones inflacionarias")
+ 881:         elif trend == 'decreasing':
+ 882:             implications.append("Tendencia decreciente requiere monitoreo de riesgos deflacionarios")
+ 883:         
+ 884:         volatility = predictions.get('trajectory', {}).get('volatility', 0)
+ 885:         if volatility > 0.5:
+ 886:             implications.append("Alta volatilidad sugiere incertidumbre económica elevada")
+ 887:         
+ 888:         return implications
+ 889:     
+ 890:     def _assess_risks(self, historical: Dict[str, Any], predictions: Dict[str, Any]) -> Dict[str, List[str]]:
+ 891:         """Assess economic risks based on analysis."""
+ 892:         risks = {
+ 893:             'upside_risks': [],
+ 894:             'downside_risks': [],
+ 895:             'structural_risks': []
+ 896:         }
+ 897:         
+ 898:         pred_mean = predictions.get('statistics', {}).get('mean', 0)
+ 899:         pred_max = predictions.get('statistics', {}).get('max', 0)
+ 900:         pred_min = predictions.get('statistics', {}).get('min', 0)
+ 901:         
+ 902:         # Upside risks (higher inflation)
+ 903:         if pred_max > 4:
+ 904:             risks['upside_risks'].append("Riesgo de inflación alta en algunos períodos")
+ 905:         if predictions.get('trajectory', {}).get('overall_trend') == 'increasing':
+ 906:             risks['upside_risks'].append("Tendencia creciente podría acelerar más de lo previsto")
+ 907:         
+ 908:         # Downside risks (lower inflation/deflation)
+ 909:         if pred_min < 0:
+ 910:             risks['downside_risks'].append("Riesgo de períodos deflacionarios")
+ 911:         if pred_mean < 1:
+ 912:             risks['downside_risks'].append("Inflación persistentemente baja")
+ 913:         
+ 914:         # Structural risks
+ 915:         volatility = predictions.get('trajectory', {}).get('volatility', 0)
+ 916:         if volatility > 0.5:
+ 917:             risks['structural_risks'].append("Alta volatilidad indica incertidumbre estructural")
+ 918:         
+ 919:         confidence = predictions.get('confidence', {})
+ 920:         if confidence.get('avg_confidence_width', 0) > 2:
+ 921:             risks['structural_risks'].append("Amplios intervalos de confianza indican alta incertidumbre")
+ 922:         
+ 923:         return risks
+ 924:     
+ 925:     def _assess_model_reliability(self, model_results: Dict[str, Any]) -> Dict[str, Any]:
+ 926:         """Assess model reliability based on performance metrics."""
+ 927:         reliability = {
+ 928:             'overall_assessment': 'No disponible',
+ 929:             'best_model': 'No identificado',
+ 930:             'performance_summary': {}
+ 931:         }
+ 932:         
+ 933:         if not model_results:
+ 934:             return reliability
+ 935:         
+ 936:         # Find best performing model
+ 937:         best_model = None
+ 938:         best_mae = float('inf')
+ 939:         
+ 940:         for model_name, results in model_results.items():
+ 941:             if results.get('status') == 'success':
+ 942:                 metrics = results.get('metrics', {})
+ 943:                 mae = metrics.get('MAE', float('inf'))
+ 944:                 if mae < best_mae:
+ 945:                     best_mae = mae
+ 946:                     best_model = model_name
+ 947:         
+ 948:         if best_model:
+ 949:             reliability['best_model'] = best_model.replace('_', ' ').title()
+ 950:             best_metrics = model_results[best_model].get('metrics', {})
+ 951:             
+ 952:             # Assess performance
+ 953:             mae = best_metrics.get('MAE', 0)
+ 954:             mape = best_metrics.get('MAPE', 0)
+ 955:             
+ 956:             if mae < 0.5 and mape < 10:
+ 957:                 assessment = "Excelente"
+ 958:             elif mae < 1.0 and mape < 20:
+ 959:                 assessment = "Buena"
+ 960:             elif mae < 2.0 and mape < 30:
+ 961:                 assessment = "Moderada"
+ 962:             else:
+ 963:                 assessment = "Limitada"
+ 964:             
+ 965:             reliability['overall_assessment'] = assessment
+ 966:             reliability['performance_summary'] = {
+ 967:                 'MAE': f"{mae:.3f}",
+ 968:                 'RMSE': f"{best_metrics.get('RMSE', 0):.3f}",
+ 969:                 'MAPE': f"{mape:.1f}%"
+ 970:             }
+ 971:         
+ 972:         return reliability
+ 973:     
+ 974:     def _generate_conclusions(self, historical: Dict[str, Any], 
+ 975:                             predictions: Dict[str, Any],
+ 976:                             interpretation: Dict[str, Any]) -> List[str]:
+ 977:         """Generate conclusions about inflation trends."""
+ 978:         conclusions = []
+ 979:         
+ 980:         # Historical conclusions
+ 981:         hist_stats = historical.get('statistics', {})
+ 982:         if hist_stats.get('mean', 0) > 0:
+ 983:             conclusions.append(f"La inflación histórica promedio fue de {hist_stats['mean']:.2f}%, "
+ 984:                              f"con una volatilidad de {hist_stats['std']:.2f}%")
+ 985:         
+ 986:         # Prediction conclusions
+ 987:         pred_stats = predictions.get('statistics', {})
+ 988:         trajectory = predictions.get('trajectory', {})
+ 989:         
+ 990:         conclusions.append(f"Las predicciones indican una inflación promedio de {pred_stats.get('mean', 0):.2f}% "
+ 991:                          f"para los próximos 12 meses")
+ 992:         
+ 993:         if trajectory.get('overall_trend') == 'increasing':
+ 994:             conclusions.append("Se espera una tendencia creciente en la inflación durante el período de predicción")
+ 995:         elif trajectory.get('overall_trend') == 'decreasing':
+ 996:             conclusions.append("Se espera una tendencia decreciente en la inflación durante el período de predicción")
+ 997:         else:
+ 998:             conclusions.append("Se espera una inflación relativamente estable durante el período de predicción")
+ 999:         
+1000:         # Regime conclusions
+1001:         regime = interpretation.get('inflation_regime', {})
+1002:         if regime.get('regime_change') == 'Sí':
+1003:             conclusions.append(f"Se anticipa un cambio de régimen inflacionario: "
+1004:                              f"de {regime.get('historical_regime', 'N/A')} "
+1005:                              f"a {regime.get('predicted_regime', 'N/A')}")
+1006:         
+1007:         # Risk conclusions
+1008:         outlook = interpretation.get('economic_outlook', {})
+1009:         risk_level = outlook.get('risk_level', 'Desconocido')
+1010:         conclusions.append(f"El nivel de riesgo económico se evalúa como: {risk_level}")
+1011:         
+1012:         return conclusions
+1013:     
+1014:     def _generate_recommendations(self, analysis: Dict[str, Any]) -> List[str]:
+1015:         """Generate policy and economic recommendations."""
+1016:         recommendations = []
+1017:         
+1018:         interpretation = analysis.get('economic_interpretation', {})
+1019:         predictions = analysis.get('prediction_analysis', {})
+1020:         
+1021:         # Policy recommendations
+1022:         policy_implications = interpretation.get('policy_implications', [])
+1023:         if policy_implications:
+1024:             recommendations.extend(policy_implications)
+1025:         
+1026:         # Monitoring recommendations
+1027:         outlook = interpretation.get('economic_outlook', {})
+1028:         if outlook.get('volatility_assessment') == 'Alta':
+1029:             recommendations.append("Se recomienda monitoreo frecuente debido a la alta volatilidad esperada")
+1030:         
+1031:         confidence = predictions.get('confidence', {})
+1032:         if confidence.get('avg_confidence_width', 0) > 2:
+1033:             recommendations.append("Los amplios intervalos de confianza sugieren cautela en la interpretación")
+1034:         
+1035:         # Risk management recommendations
+1036:         risks = interpretation.get('risk_assessment', {})
+1037:         if risks.get('upside_risks'):
+1038:             recommendations.append("Preparar medidas preventivas contra presiones inflacionarias")
+1039:         if risks.get('downside_risks'):
+1040:             recommendations.append("Considerar estímulos económicos ante riesgos deflacionarios")
+1041:         
+1042:         return recommendations
+1043:     
+1044:     def create_technical_report(self, analysis: Dict[str, Any], 
+1045:                               visualizations: Dict[str, str],
+1046:                               model_results: Optional[Dict[str, Any]] = None,
+1047:                               output_filename: Optional[str] = None) -> str:
+1048:         """
+1049:         Create technical report for PDF generation using reportlab.
+1050:         
+1051:         Generates a comprehensive PDF report with methodology, results,
+1052:         and economic analysis.
+1053:         
+1054:         Args:
+1055:             analysis (Dict[str, Any]): Economic analysis results
+1056:             visualizations (Dict[str, str]): Dictionary of plot file paths
+1057:             model_results (Dict[str, Any], optional): Model evaluation results
+1058:             output_filename (str, optional): Output PDF filename
+1059:             
+1060:         Returns:
+1061:             str: Path to generated PDF report
+1062:         """
+1063:         if not _REPORTLAB_AVAILABLE:
+1064:             raise ImportError("reportlab is required for PDF generation. "
+1065:                             "Install with: pip install reportlab")
+1066:         
+1067:         if output_filename is None:
+1068:             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+1069:             output_filename = f"informe_tecnico_inflacion_{timestamp}.pdf"
+1070:         
+1071:         output_path = self.reports_dir / output_filename
+1072:         
+1073:         self.logger.info(f"Creating technical PDF report: {output_path}")
+1074:         
+1075:         try:
+1076:             # Create PDF document
+1077:             doc = SimpleDocTemplate(str(output_path), pagesize=A4,
+1078:                                   rightMargin=72, leftMargin=72,
+1079:                                   topMargin=72, bottomMargin=18)
+1080:             
+1081:             # Build story (content)
+1082:             story = []
+1083:             styles = getSampleStyleSheet()
+1084:             
+1085:             # Custom styles
+1086:             title_style = ParagraphStyle(
+1087:                 'CustomTitle',
+1088:                 parent=styles['Heading1'],
+1089:                 fontSize=18,
+1090:                 spaceAfter=30,
+1091:                 alignment=1,  # Center
+1092:                 textColor=colors.darkblue
+1093:             )
+1094:             
+1095:             heading_style = ParagraphStyle(
+1096:                 'CustomHeading',
+1097:                 parent=styles['Heading2'],
+1098:                 fontSize=14,
+1099:                 spaceAfter=12,
+1100:                 textColor=colors.darkblue
+1101:             )
+1102:             
+1103:             # Title page
+1104:             story.append(Paragraph("INFORME TÉCNICO", title_style))
+1105:             story.append(Paragraph("Predicción de Inflación en España", title_style))
+1106:             story.append(Spacer(1, 20))
+1107:             
+1108:             # Date and summary
+1109:             story.append(Paragraph(f"Fecha: {datetime.now().strftime('%d/%m/%Y')}", styles['Normal']))
+1110:             story.append(Paragraph(f"Dirección y desarrollo del proyecto: María González Gómez y Lydia Ruiz Martínez", styles['Normal']))
+1111:             story.append(Spacer(1, 30))
+1112:             
+1113:             # Executive Summary
+1114:             story.append(Paragraph("RESUMEN EJECUTIVO", heading_style))
+1115:             
+1116:             pred_analysis = analysis.get('prediction_analysis', {})
+1117:             pred_stats = pred_analysis.get('statistics', {})
+1118:             
+1119:             summary_text = f"""
+1120:             Este informe presenta los resultados del análisis predictivo de la inflación en España 
+1121:             utilizando modelos de inteligencia artificial. Las predicciones indican una inflación 
+1122:             promedio de {pred_stats.get('mean', 0):.2f}% para los próximos 12 meses, con un rango 
+1123:             de {pred_stats.get('min', 0):.2f}% a {pred_stats.get('max', 0):.2f}%.
+1124:             """
+1125:             story.append(Paragraph(summary_text, styles['Normal']))
+1126:             story.append(Spacer(1, 20))
+1127:             
+1128:             # Methodology section
+1129:             story.append(Paragraph("1. METODOLOGÍA", heading_style))
+1130:             
+1131:             methodology_text = """
+1132:             <b>Fuente de Datos:</b> Instituto Nacional de Estadística (INE) - Índice de Precios al Consumo (IPC)<br/>
+1133:             <b>Modelos Utilizados:</b> ARIMA, Random Forest, LSTM (Long Short-Term Memory)<br/>
+1134:             <b>Período de Análisis:</b> Datos históricos desde 2002<br/>
+1135:             <b>Horizonte de Predicción:</b> 12 meses<br/>
+1136:             <b>Métricas de Evaluación:</b> MAE (Error Absoluto Medio), RMSE (Raíz del Error Cuadrático Medio), MAPE (Error Porcentual Absoluto Medio)
+1137:             """
+1138:             story.append(Paragraph(methodology_text, styles['Normal']))
+1139:             story.append(Spacer(1, 20))
+1140:             
+1141:             # Model Performance section
+1142:             if model_results:
+1143:                 story.append(Paragraph("2. RENDIMIENTO DE MODELOS", heading_style))
+1144:                 
+1145:                 # Create performance table
+1146:                 model_data = [['Modelo', 'MAE', 'RMSE', 'MAPE (%)', 'Estado']]
+1147:                 
+1148:                 for model_name, results in model_results.items():
+1149:                     if results.get('status') == 'success':
+1150:                         metrics = results.get('metrics', {})
+1151:                         model_data.append([
+1152:                             model_name.replace('_', ' ').title(),
+1153:                             f"{metrics.get('MAE', 0):.3f}",
+1154:                             f"{metrics.get('RMSE', 0):.3f}",
+1155:                             f"{metrics.get('MAPE', 0):.1f}",
+1156:                             "Exitoso"
+1157:                         ])
+1158:                     else:
+1159:                         model_data.append([
+1160:                             model_name.replace('_', ' ').title(),
+1161:                             "N/A", "N/A", "N/A", "Error"
+1162:                         ])
+1163:                 
+1164:                 model_table = Table(model_data)
+1165:                 model_table.setStyle(TableStyle([
+1166:                     ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+1167:                     ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+1168:                     ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+1169:                     ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+1170:                     ('FONTSIZE', (0, 0), (-1, 0), 12),
+1171:                     ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+1172:                     ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+1173:                     ('GRID', (0, 0), (-1, -1), 1, colors.black)
+1174:                 ]))
+1175:                 
+1176:                 story.append(model_table)
+1177:                 story.append(Spacer(1, 20))
+1178:             
+1179:             # Add visualizations
+1180:             story.append(Paragraph("3. ANÁLISIS VISUAL", heading_style))
+1181:             
+1182:             for plot_type, plot_path in visualizations.items():
+1183:                 if Path(plot_path).exists():
+1184:                     try:
+1185:                         # Add plot title
+1186:                         plot_titles = {
+1187:                             'time_series': 'Evolución Histórica y Predicciones',
+1188:                             'model_comparison': 'Comparación de Rendimiento de Modelos',
+1189:                             'prediction_distribution': 'Distribución de Predicciones',
+1190:                             'confidence_intervals': 'Intervalos de Confianza',
+1191:                             'historical_analysis': 'Análisis Histórico',
+1192:                             'seasonal_decomposition': 'Descomposición Estacional'
+1193:                         }
+1194:                         
+1195:                         title = plot_titles.get(plot_type, plot_type.replace('_', ' ').title())
+1196:                         story.append(Paragraph(f"3.{len([p for p in visualizations.keys() if visualizations[p] and Path(visualizations[p]).exists() and list(visualizations.keys()).index(p) <= list(visualizations.keys()).index(plot_type)])}. {title}", styles['Heading3']))
+1197:                         
+1198:                         # Add image
+1199:                         img = Image(plot_path, width=6*inch, height=4*inch)
+1200:                         story.append(img)
+1201:                         story.append(Spacer(1, 15))
+1202:                         
+1203:                     except Exception as e:
+1204:                         self.logger.warning(f"Could not add plot {plot_type}: {e}")
+1205:             
+1206:             # Economic Analysis section
+1207:             story.append(Paragraph("4. ANÁLISIS ECONÓMICO", heading_style))
+1208:             
+1209:             # Historical analysis
+1210:             hist_analysis = analysis.get('historical_analysis', {})
+1211:             hist_stats = hist_analysis.get('statistics', {})
+1212:             
+1213:             if hist_stats:
+1214:                 hist_text = f"""
+1215:                 <b>Análisis Histórico:</b><br/>
+1216:                 • Inflación promedio histórica: {hist_stats.get('mean', 0):.2f}%<br/>
+1217:                 • Desviación estándar: {hist_stats.get('std', 0):.2f}%<br/>
+1218:                 • Rango: {hist_stats.get('min', 0):.2f}% - {hist_stats.get('max', 0):.2f}%<br/>
+1219:                 • Número de observaciones: {hist_stats.get('count', 0)}
+1220:                 """
+1221:                 story.append(Paragraph(hist_text, styles['Normal']))
+1222:                 story.append(Spacer(1, 10))
+1223:             
+1224:             # Prediction analysis
+1225:             if pred_stats:
+1226:                 pred_text = f"""
+1227:                 <b>Análisis de Predicciones:</b><br/>
+1228:                 • Inflación promedio predicha: {pred_stats.get('mean', 0):.2f}%<br/>
+1229:                 • Desviación estándar: {pred_stats.get('std', 0):.2f}%<br/>
+1230:                 • Rango predicho: {pred_stats.get('min', 0):.2f}% - {pred_stats.get('max', 0):.2f}%<br/>
+1231:                 • Horizonte de predicción: {pred_stats.get('count', 0)} meses
+1232:                 """
+1233:                 story.append(Paragraph(pred_text, styles['Normal']))
+1234:                 story.append(Spacer(1, 10))
+1235:             
+1236:             # Economic interpretation
+1237:             interpretation = analysis.get('economic_interpretation', {})
+1238:             
+1239:             # Inflation regime
+1240:             regime = interpretation.get('inflation_regime', {})
+1241:             if regime:
+1242:                 regime_text = f"""
+1243:                 <b>Régimen Inflacionario:</b><br/>
+1244:                 • Régimen histórico: {regime.get('historical_regime', 'N/A')}<br/>
+1245:                 • Régimen predicho: {regime.get('predicted_regime', 'N/A')}<br/>
+1246:                 • Cambio de régimen: {regime.get('regime_change', 'N/A')}
+1247:                 """
+1248:                 story.append(Paragraph(regime_text, styles['Normal']))
+1249:                 story.append(Spacer(1, 10))
+1250:             
+1251:             # Economic outlook
+1252:             outlook = interpretation.get('economic_outlook', {})
+1253:             if outlook:
+1254:                 outlook_text = f"""
+1255:                 <b>Perspectiva Económica:</b><br/>
+1256:                 • Evaluación: {outlook.get('outlook', 'N/A')}<br/>
+1257:                 • Nivel de riesgo: {outlook.get('risk_level', 'N/A')}<br/>
+1258:                 • Volatilidad: {outlook.get('volatility_assessment', 'N/A')}<br/>
+1259:                 • Estabilidad: {outlook.get('stability', 'N/A')}
+1260:                 """
+1261:                 story.append(Paragraph(outlook_text, styles['Normal']))
+1262:                 story.append(Spacer(1, 20))
+1263:             
+1264:             # Conclusions section
+1265:             story.append(Paragraph("5. CONCLUSIONES", heading_style))
+1266:             
+1267:             conclusions = analysis.get('conclusions', [])
+1268:             if conclusions:
+1269:                 for i, conclusion in enumerate(conclusions, 1):
+1270:                     story.append(Paragraph(f"{i}. {conclusion}", styles['Normal']))
+1271:                     story.append(Spacer(1, 8))
+1272:             else:
+1273:                 story.append(Paragraph("No se generaron conclusiones específicas.", styles['Normal']))
+1274:             
+1275:             story.append(Spacer(1, 20))
+1276:             
+1277:             # Recommendations section
+1278:             story.append(Paragraph("6. RECOMENDACIONES", heading_style))
+1279:             
+1280:             recommendations = analysis.get('recommendations', [])
+1281:             if recommendations:
+1282:                 for i, recommendation in enumerate(recommendations, 1):
+1283:                     story.append(Paragraph(f"{i}. {recommendation}", styles['Normal']))
+1284:                     story.append(Spacer(1, 8))
+1285:             else:
+1286:                 story.append(Paragraph("No se generaron recomendaciones específicas.", styles['Normal']))
+1287:             
+1288:             # Risk Assessment section
+1289:             risks = interpretation.get('risk_assessment', {})
+1290:             if risks:
+1291:                 story.append(Spacer(1, 20))
+1292:                 story.append(Paragraph("7. EVALUACIÓN DE RIESGOS", heading_style))
+1293:                 
+1294:                 upside_risks = risks.get('upside_risks', [])
+1295:                 if upside_risks:
+1296:                     story.append(Paragraph("<b>Riesgos al Alza:</b>", styles['Normal']))
+1297:                     for risk in upside_risks:
+1298:                         story.append(Paragraph(f"• {risk}", styles['Normal']))
+1299:                     story.append(Spacer(1, 8))
+1300:                 
+1301:                 downside_risks = risks.get('downside_risks', [])
+1302:                 if downside_risks:
+1303:                     story.append(Paragraph("<b>Riesgos a la Baja:</b>", styles['Normal']))
+1304:                     for risk in downside_risks:
+1305:                         story.append(Paragraph(f"• {risk}", styles['Normal']))
+1306:                     story.append(Spacer(1, 8))
+1307:                 
+1308:                 structural_risks = risks.get('structural_risks', [])
+1309:                 if structural_risks:
+1310:                     story.append(Paragraph("<b>Riesgos Estructurales:</b>", styles['Normal']))
+1311:                     for risk in structural_risks:
+1312:                         story.append(Paragraph(f"• {risk}", styles['Normal']))
+1313:             
+1314:             # Footer
+1315:             story.append(Spacer(1, 30))
+1316:             story.append(Paragraph("---", styles['Normal']))
+1317:             story.append(Paragraph(f"Informe generado automáticamente el {datetime.now().strftime('%d/%m/%Y a las %H:%M')}", 
+1318:                                  styles['Normal']))
+1319:             
+1320:             # Build PDF
+1321:             doc.build(story)
+1322:             
+1323:             self.logger.info(f"Technical report created successfully: {output_path}")
+1324:             return str(output_path)
+1325:             
+1326:         except Exception as e:
+1327:             self.logger.error(f"Error creating technical report: {e}")
+1328:             raise
+1329:     
+1330:     def export_code_screenshots(self, source_dir: str = "src", 
+1331:                               output_dir: Optional[str] = None) -> Dict[str, str]:
+1332:         """
+1333:         Export code screenshots for process documentation.
+1334:         
+1335:         Creates documentation of the source code by capturing
+1336:         code snippets and saving them as formatted text files.
+1337:         
+1338:         Args:
+1339:             source_dir (str): Directory containing source code
+1340:             output_dir (str, optional): Output directory for code documentation
+1341:             
+1342:         Returns:
+1343:             Dict[str, str]: Dictionary mapping file names to documentation paths
+1344:         """
+1345:         if output_dir is None:
+1346:             output_dir = self.reports_dir / "code_documentation"
+1347:         else:
+1348:             output_dir = Path(output_dir)
+1349:         
+1350:         output_dir.mkdir(parents=True, exist_ok=True)
+1351:         
+1352:         self.logger.info(f"Exporting code documentation from {source_dir} to {output_dir}")
+1353:         
+1354:         documented_files = {}
+1355:         source_path = Path(source_dir)
+1356:         
+1357:         if not source_path.exists():
+1358:             self.logger.warning(f"Source directory {source_dir} does not exist")
+1359:             return documented_files
+1360:         
+1361:         try:
+1362:             # Find all Python files
+1363:             python_files = list(source_path.glob("*.py"))
+1364:             
+1365:             for py_file in python_files:
+1366:                 try:
+1367:                     # Read source code
+1368:                     with open(py_file, 'r', encoding='utf-8') as f:
+1369:                         code_content = f.read()
+1370:                     
+1371:                     # Create formatted documentation
+1372:                     doc_content = self._format_code_documentation(py_file.name, code_content)
+1373:                     
+1374:                     # Save documentation
+1375:                     doc_filename = f"{py_file.stem}_documentation.txt"
+1376:                     doc_path = output_dir / doc_filename
+1377:                     
+1378:                     with open(doc_path, 'w', encoding='utf-8') as f:
+1379:                         f.write(doc_content)
+1380:                     
+1381:                     documented_files[py_file.name] = str(doc_path)
+1382:                     self.logger.info(f"Documented {py_file.name}")
+1383:                     
+1384:                 except Exception as e:
+1385:                     self.logger.warning(f"Could not document {py_file}: {e}")
+1386:             
+1387:             # Create summary documentation
+1388:             summary_path = self._create_code_summary(documented_files, output_dir)
+1389:             if summary_path:
+1390:                 documented_files['_summary'] = summary_path
+1391:             
+1392:             # Create process flow documentation
+1393:             process_path = self._create_process_documentation(output_dir)
+1394:             if process_path:
+1395:                 documented_files['_process_flow'] = process_path
+1396:             
+1397:             self.logger.info(f"Code documentation completed. {len(documented_files)} files documented.")
+1398:             return documented_files
+1399:             
+1400:         except Exception as e:
+1401:             self.logger.error(f"Error exporting code documentation: {e}")
+1402:             raise
+1403:     
+1404:     def _format_code_documentation(self, filename: str, code_content: str) -> str:
+1405:         """Format code content for documentation."""
+1406:         lines = code_content.split('\n')
+1407:         
+1408:         doc_lines = [
+1409:             "=" * 80,
+1410:             f"DOCUMENTACIÓN DE CÓDIGO: {filename}",
+1411:             "=" * 80,
+1412:             f"Fecha de generación: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}",
+1413:             f"Número de líneas: {len(lines)}",
+1414:             "",
+1415:             "CONTENIDO DEL ARCHIVO:",
+1416:             "-" * 40,
+1417:             ""
+1418:         ]
+1419:         
+1420:         # Add line numbers and content
+1421:         for i, line in enumerate(lines, 1):
+1422:             doc_lines.append(f"{i:4d}: {line}")
+1423:         
+1424:         doc_lines.extend([
+1425:             "",
+1426:             "-" * 40,
+1427:             "FIN DEL ARCHIVO",
+1428:             "=" * 80
+1429:         ])
+1430:         
+1431:         return '\n'.join(doc_lines)
+1432:     
+1433:     def _create_code_summary(self, documented_files: Dict[str, str], output_dir: Path) -> Optional[str]:
+1434:         """Create a summary of all documented code files."""
+1435:         try:
+1436:             summary_content = [
+1437:                 "=" * 80,
+1438:                 "RESUMEN DE DOCUMENTACIÓN DE CÓDIGO",
+1439:                 "=" * 80,
+1440:                 f"Fecha de generación: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}",
+1441:                 f"Total de archivos documentados: {len([f for f in documented_files.keys() if not f.startswith('_')])}",
+1442:                 "",
+1443:                 "ARCHIVOS DOCUMENTADOS:",
+1444:                 "-" * 40
+1445:             ]
+1446:             
+1447:             for filename, doc_path in documented_files.items():
+1448:                 if not filename.startswith('_'):
+1449:                     summary_content.append(f"• {filename} -> {Path(doc_path).name}")
+1450:             
+1451:             summary_content.extend([
+1452:                 "",
+1453:                 "ESTRUCTURA DEL SISTEMA:",
+1454:                 "-" * 40,
+1455:                 "• ine_extractor.py: Descarga de datos del INE",
+1456:                 "• data_cleaner.py: Limpieza y procesamiento de datos",
+1457:                 "• feature_engineering.py: Ingeniería de características",
+1458:                 "• model_trainer.py: Entrenamiento de modelos de IA",
+1459:                 "• predictor.py: Generación de predicciones",
+1460:                 "• report_generator.py: Generación de informes y visualizaciones",
+1461:                 "",
+1462:                 "FLUJO DE PROCESAMIENTO:",
+1463:                 "-" * 40,
+1464:                 "1. Extracción de datos (INE) -> datos brutos",
+1465:                 "2. Limpieza de datos -> datos procesados",
+1466:                 "3. Ingeniería de características -> características para ML",
+1467:                 "4. Entrenamiento de modelos -> modelos entrenados",
+1468:                 "5. Generación de predicciones -> predicciones futuras",
+1469:                 "6. Generación de informes -> análisis y visualizaciones",
+1470:                 "",
+1471:                 "=" * 80
+1472:             ])
+1473:             
+1474:             summary_path = output_dir / "resumen_documentacion.txt"
+1475:             with open(summary_path, 'w', encoding='utf-8') as f:
+1476:                 f.write('\n'.join(summary_content))
+1477:             
+1478:             return str(summary_path)
+1479:             
+1480:         except Exception as e:
+1481:             self.logger.warning(f"Could not create code summary: {e}")
+1482:             return None
+1483:     
+1484:     def _create_process_documentation(self, output_dir: Path) -> Optional[str]:
+1485:         """Create process flow documentation."""
+1486:         try:
+1487:             process_content = [
+1488:                 "=" * 80,
+1489:                 "DOCUMENTACIÓN DEL PROCESO DE PREDICCIÓN DE INFLACIÓN",
+1490:                 "=" * 80,
+1491:                 f"Fecha de generación: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}",
+1492:                 "",
+1493:                 "DESCRIPCIÓN GENERAL:",
+1494:                 "-" * 40,
+1495:                 "Sistema automatizado para la predicción de la tasa de inflación en España",
+1496:                 "utilizando datos del Instituto Nacional de Estadística (INE) y modelos de",
+1497:                 "inteligencia artificial (ARIMA, Random Forest, LSTM).",
+1498:                 "",
+1499:                 "COMPONENTES PRINCIPALES:",
+1500:                 "-" * 40,
+1501:                 "",
+1502:                 "1. EXTRACTOR DE DATOS INE (ine_extractor.py)",
+1503:                 "   • Conecta con la API del INE",
+1504:                 "   • Descarga datos de IPC general, por grupos e IPCA",
+1505:                 "   • Maneja errores de conexión con reintentos",
+1506:                 "   • Guarda datos en formato CSV",
+1507:                 "",
+1508:                 "2. PROCESADOR DE DATOS (data_cleaner.py)",
+1509:                 "   • Carga datos brutos desde CSV",
+1510:                 "   • Detecta y corrige valores faltantes",
+1511:                 "   • Identifica y trata outliers estadísticos",
+1512:                 "   • Normaliza fechas y calcula tasas de inflación",
+1513:                 "",
+1514:                 "3. INGENIERO DE CARACTERÍSTICAS (feature_engineering.py)",
+1515:                 "   • Crea características lag (1, 3, 6, 12 meses)",
+1516:                 "   • Genera medias móviles y componentes estacionales",
+1517:                 "   • Prepara datos para modelos de machine learning",
+1518:                 "",
+1519:                 "4. ENTRENADOR DE MODELOS (model_trainer.py)",
+1520:                 "   • Implementa modelos ARIMA, Random Forest y LSTM",
+1521:                 "   • Divide datos en entrenamiento y validación",
+1522:                 "   • Evalúa modelos con métricas MAE, RMSE, MAPE",
+1523:                 "   • Selecciona el mejor modelo automáticamente",
+1524:                 "",
+1525:                 "5. PREDICTOR (predictor.py)",
+1526:                 "   • Carga el mejor modelo entrenado",
+1527:                 "   • Genera predicciones para 12 meses",
+1528:                 "   • Calcula intervalos de confianza",
+1529:                 "   • Valida y exporta predicciones",
+1530:                 "",
+1531:                 "6. GENERADOR DE INFORMES (report_generator.py)",
+1532:                 "   • Crea visualizaciones con matplotlib/seaborn",
+1533:                 "   • Genera análisis económico interpretativo",
+1534:                 "   • Produce informes técnicos en PDF",
+1535:                 "   • Documenta código fuente del proceso",
+1536:                 "",
+1537:                 "FLUJO DE EJECUCIÓN:",
+1538:                 "-" * 40,
+1539:                 "",
+1540:                 "Paso 1: Descarga de Datos",
+1541:                 "├── Conectar con API del INE",
+1542:                 "├── Descargar IPC general (serie principal)",
+1543:                 "├── Descargar IPC por grupos (sectorial)",
+1544:                 "├── Descargar IPCA (armonizado europeo)",
+1545:                 "└── Guardar en data/raw/",
+1546:                 "",
+1547:                 "Paso 2: Procesamiento de Datos",
+1548:                 "├── Cargar datos brutos",
+1549:                 "├── Limpiar valores faltantes (interpolación)",
+1550:                 "├── Detectar outliers (IQR, Z-score)",
+1551:                 "├── Calcular tasas de inflación",
+1552:                 "└── Guardar en data/processed/",
+1553:                 "",
+1554:                 "Paso 3: Ingeniería de Características",
+1555:                 "├── Crear características lag",
+1556:                 "├── Generar medias móviles",
+1557:                 "├── Añadir componentes estacionales",
+1558:                 "└── Preparar datasets para ML",
+1559:                 "",
+1560:                 "Paso 4: Entrenamiento de Modelos",
+1561:                 "├── Dividir datos (80% entrenamiento, 20% validación)",
+1562:                 "├── Entrenar ARIMA (series temporales)",
+1563:                 "├── Entrenar Random Forest (no lineal)",
+1564:                 "├── Entrenar LSTM (redes neuronales)",
+1565:                 "├── Evaluar con métricas de error",
+1566:                 "└── Seleccionar mejor modelo",
+1567:                 "",
+1568:                 "Paso 5: Generación de Predicciones",
+1569:                 "├── Cargar mejor modelo",
+1570:                 "├── Generar predicciones 12 meses",
+1571:                 "├── Calcular intervalos de confianza",
+1572:                 "└── Exportar resultados",
+1573:                 "",
+1574:                 "Paso 6: Generación de Informes",
+1575:                 "├── Crear visualizaciones (6 tipos de gráficos)",
+1576:                 "├── Generar análisis económico interpretativo",
+1577:                 "├── Producir informe técnico PDF",
+1578:                 "└── Documentar proceso y código",
+1579:                 "",
+1580:                 "MÉTRICAS DE EVALUACIÓN:",
+1581:                 "-" * 40,
+1582:                 "• MAE (Mean Absolute Error): Error absoluto promedio",
+1583:                 "• RMSE (Root Mean Square Error): Raíz del error cuadrático medio",
+1584:                 "• MAPE (Mean Absolute Percentage Error): Error porcentual absoluto medio",
+1585:                 "",
+1586:                 "OUTPUTS GENERADOS:",
+1587:                 "-" * 40,
+1588:                 "• data/processed/: Datos limpios y procesados",
+1589:                 "• models/: Modelos entrenados guardados",
+1590:                 "• reports/: Visualizaciones, análisis y documentación",
+1591:                 "• reports/informe_tecnico_*.pdf: Informe técnico completo",
+1592:                 "",
+1593:                 "CONFIGURACIÓN:",
+1594:                 "-" * 40,
+1595:                 "• config/config.yaml: Parámetros del sistema",
+1596:                 "• requirements.txt: Dependencias de Python",
+1597:                 "",
+1598:                 "=" * 80
+1599:             ]
+1600:             
+1601:             process_path = output_dir / "documentacion_proceso.txt"
+1602:             with open(process_path, 'w', encoding='utf-8') as f:
+1603:                 f.write('\n'.join(process_content))
+1604:             
+1605:             return str(process_path)
+1606:             
+1607:         except Exception as e:
+1608:             self.logger.warning(f"Could not create process documentation: {e}")
+1609:             return None    
+1610: def generate_economic_analysis(self, data: pd.DataFrame, predictions: pd.DataFrame,
+1611:                                  model_results: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+1612:         """
+1613:         Generate economic analysis with interpretation.
+1614:         
+1615:         Implements interpretation of results and economic conclusions
+1616:         about inflation trends identified in the data and predictions.
+1617:         
+1618:         Args:
+1619:             data (pd.DataFrame): Historical inflation data
+1620:             predictions (pd.DataFrame): Model predictions
+1621:             model_results (Dict[str, Any], optional): Model evaluation results
+1622:             
+1623:         Returns:
+1624:             Dict[str, Any]: Economic analysis with interpretations and conclusions
+1625:         """
+1626:         self.logger.info("Generating economic analysis and interpretation")
+1627:         
+1628:         analysis = {
+1629:             'timestamp': datetime.now().isoformat(),
+1630:             'historical_analysis': {},
+1631:             'prediction_analysis': {},
+1632:             'economic_interpretation': {},
+1633:             'conclusions': [],
+1634:             'recommendations': []
+1635:         }
+1636:         
+1637:         try:
+1638:             # Historical data analysis
+1639:             analysis['historical_analysis'] = self._analyze_historical_data(data)
+1640:             
+1641:             # Prediction analysis
+1642:             analysis['prediction_analysis'] = self._analyze_predictions(predictions)
+1643:             
+1644:             # Economic interpretation
+1645:             analysis['economic_interpretation'] = self._generate_economic_interpretation(
+1646:                 analysis['historical_analysis'], 
+1647:                 analysis['prediction_analysis'],
+1648:                 model_results
+1649:             )
+1650:             
+1651:             # Generate conclusions
+1652:             analysis['conclusions'] = self._generate_conclusions(
+1653:                 analysis['historical_analysis'],
+1654:                 analysis['prediction_analysis'],
+1655:                 analysis['economic_interpretation']
+1656:             )
+1657:             
+1658:             # Generate recommendations
+1659:             analysis['recommendations'] = self._generate_recommendations(analysis)
+1660:             
+1661:             # Save analysis to JSON
+1662:             analysis_path = self.reports_dir / "economic_analysis.json"
+1663:             with open(analysis_path, 'w', encoding='utf-8') as f:
+1664:                 json.dump(analysis, f, indent=2, ensure_ascii=False)
+1665:             
+1666:             self.logger.info(f"Economic analysis saved to {analysis_path}")
+1667:             return analysis
+1668:             
+1669:         except Exception as e:
+1670:             self.logger.error(f"Error generating economic analysis: {e}")
+1671:             raise
+1672:     
+1673: def _analyze_historical_data(self, data: pd.DataFrame) -> Dict[str, Any]:
+1674:         """Analyze historical inflation data."""
+1675:         inflation_col = self._find_inflation_column(data)
+1676:         if not inflation_col:
+1677:             return {'error': 'No inflation column found'}
+1678:         
+1679:         inflation_data = data[inflation_col].dropna()
+1680:         
+1681:         # Basic statistics
+1682:         stats = {
+1683:             'mean': float(np.mean(inflation_data)),
+1684:             'median': float(np.median(inflation_data)),
+1685:             'std': float(np.std(inflation_data)),
+1686:             'min': float(np.min(inflation_data)),
+1687:             'max': float(np.max(inflation_data)),
+1688:             'count': len(inflation_data)
+1689:         }
+1690:         
+1691:         # Periods analysis
+1692:         periods = {
+1693:             'high_inflation_periods': len(inflation_data[inflation_data > 3.0]),
+1694:             'low_inflation_periods': len(inflation_data[inflation_data < 1.0]),
+1695:             'deflation_periods': len(inflation_data[inflation_data < 0]),
+1696:             'stable_periods': len(inflation_data[(inflation_data >= 1.0) & (inflation_data <= 3.0)])
+1697:         }
+1698:         
+1699:         # Volatility analysis
+1700:         volatility = {
+1701:             'coefficient_variation': stats['std'] / abs(stats['mean']) if stats['mean'] != 0 else 0,
+1702:             'range': stats['max'] - stats['min'],
+1703:             'iqr': float(np.percentile(inflation_data, 75) - np.percentile(inflation_data, 25))
+1704:         }
+1705:         
+1706:         # Trend analysis
+1707:         if len(inflation_data) >= 12:
+1708:             recent_12m = inflation_data.tail(12)
+1709:             previous_12m = inflation_data.tail(24).head(12) if len(inflation_data) >= 24 else inflation_data.head(12)
+1710:             
+1711:             trend = {
+1712:                 'recent_12m_avg': float(np.mean(recent_12m)),
+1713:                 'previous_12m_avg': float(np.mean(previous_12m)),
+1714:                 'trend_direction': 'increasing' if np.mean(recent_12m) > np.mean(previous_12m) else 'decreasing',
+1715:                 'trend_magnitude': float(abs(np.mean(recent_12m) - np.mean(previous_12m)))
+1716:             }
+1717:         else:
+1718:             trend = {'insufficient_data': True}
+1719:         
+1720:         return {
+1721:             'statistics': stats,
+1722:             'periods': periods,
+1723:             'volatility': volatility,
+1724:             'trend': trend
+1725:         }
+1726:     
+1727: def _analyze_predictions(self, predictions: pd.DataFrame) -> Dict[str, Any]:
+1728:         """Analyze prediction results."""
+1729:         pred_values = predictions['predicted_inflation'].values
+1730:         
+1731:         # Basic prediction statistics
+1732:         pred_stats = {
+1733:             'mean': float(np.mean(pred_values)),
+1734:             'median': float(np.median(pred_values)),
+1735:             'std': float(np.std(pred_values)),
+1736:             'min': float(np.min(pred_values)),
+1737:             'max': float(np.max(pred_values)),
+1738:             'count': len(pred_values)
+1739:         }
+1740:         
+1741:         # Prediction trajectory
+1742:         trajectory = {
+1743:             'initial_prediction': float(pred_values[0]) if len(pred_values) > 0 else 0,
+1744:             'final_prediction': float(pred_values[-1]) if len(pred_values) > 0 else 0,
+1745:             'overall_trend': 'increasing' if pred_values[-1] > pred_values[0] else 'decreasing' if len(pred_values) > 1 else 'stable',
+1746:             'volatility': float(np.std(np.diff(pred_values))) if len(pred_values) > 1 else 0
+1747:         }
+1748:         
+1749:         # Confidence analysis
+1750:         confidence_analysis = {}
+1751:         if 'confidence_lower' in predictions.columns and 'confidence_upper' in predictions.columns:
+1752:             ci_width = predictions['confidence_upper'] - predictions['confidence_lower']
+1753:             confidence_analysis = {
+1754:                 'avg_confidence_width': float(np.mean(ci_width)),
+1755:                 'max_confidence_width': float(np.max(ci_width)),
+1756:                 'min_confidence_width': float(np.min(ci_width)),
+1757:                 'confidence_trend': 'increasing' if ci_width.iloc[-1] > ci_width.iloc[0] else 'decreasing' if len(ci_width) > 1 else 'stable'
+1758:             }
+1759:         
+1760:         # Economic classification
+1761:         economic_periods = {
+1762:             'high_inflation_months': len(pred_values[pred_values > 3.0]),
+1763:             'moderate_inflation_months': len(pred_values[(pred_values >= 1.0) & (pred_values <= 3.0)]),
+1764:             'low_inflation_months': len(pred_values[(pred_values >= 0) & (pred_values < 1.0)]),
+1765:             'deflation_months': len(pred_values[pred_values < 0])
+1766:         }
+1767:         
+1768:         return {
+1769:             'statistics': pred_stats,
+1770:             'trajectory': trajectory,
+1771:             'confidence': confidence_analysis,
+1772:             'economic_periods': economic_periods
+1773:         }
+1774:     
+1775: def _generate_economic_interpretation(self, historical: Dict[str, Any], 
+1776:                                         predictions: Dict[str, Any],
+1777:                                         model_results: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+1778:         """Generate economic interpretation of results."""
+1779:         interpretation = {
+1780:             'inflation_regime': self._classify_inflation_regime(historical, predictions),
+1781:             'economic_outlook': self._assess_economic_outlook(predictions),
+1782:             'policy_implications': self._assess_policy_implications(historical, predictions),
+1783:             'risk_assessment': self._assess_risks(historical, predictions),
+1784:             'model_reliability': self._assess_model_reliability(model_results) if model_results else {}
+1785:         }
+1786:         
+1787:         return interpretation
+1788:     
+1789: def _classify_inflation_regime(self, historical: Dict[str, Any], predictions: Dict[str, Any]) -> Dict[str, str]:
+1790:         """Classify the inflation regime based on historical and predicted data."""
+1791:         hist_mean = historical.get('statistics', {}).get('mean', 0)
+1792:         pred_mean = predictions.get('statistics', {}).get('mean', 0)
+1793:         
+1794:         # Historical regime
+1795:         if hist_mean < 0:
+1796:             hist_regime = "deflacionario"
+1797:         elif hist_mean < 1:
+1798:             hist_regime = "inflación muy baja"
+1799:         elif hist_mean <= 2:
+1800:             hist_regime = "inflación baja y estable"
+1801:         elif hist_mean <= 4:
+1802:             hist_regime = "inflación moderada"
+1803:         else:
+1804:             hist_regime = "inflación alta"
+1805:         
+1806:         # Predicted regime
+1807:         if pred_mean < 0:
+1808:             pred_regime = "deflacionario"
+1809:         elif pred_mean < 1:
+1810:             pred_regime = "inflación muy baja"
+1811:         elif pred_mean <= 2:
+1812:             pred_regime = "inflación baja y estable"
+1813:         elif pred_mean <= 4:
+1814:             pred_regime = "inflación moderada"
+1815:         else:
+1816:             pred_regime = "inflación alta"
+1817:         
+1818:         return {
+1819:             'historical_regime': hist_regime,
+1820:             'predicted_regime': pred_regime,
+1821:             'regime_change': 'Sí' if hist_regime != pred_regime else 'No'
+1822:         }
+1823:     
+1824: def _assess_economic_outlook(self, predictions: Dict[str, Any]) -> Dict[str, str]:
+1825:         """Assess economic outlook based on predictions."""
+1826:         trajectory = predictions.get('trajectory', {})
+1827:         stats = predictions.get('statistics', {})
+1828:         
+1829:         trend = trajectory.get('overall_trend', 'stable')
+1830:         volatility = trajectory.get('volatility', 0)
+1831:         mean_pred = stats.get('mean', 0)
+1832:         
+1833:         if trend == 'increasing' and mean_pred > 3:
+1834:             outlook = "Presiones inflacionarias crecientes"
+1835:             risk_level = "Alto"
+1836:         elif trend == 'decreasing' and mean_pred < 1:
+1837:             outlook = "Riesgo de deflación"
+1838:             risk_level = "Moderado-Alto"
+1839:         elif 1 <= mean_pred <= 2:
+1840:             outlook = "Estabilidad de precios"
+1841:             risk_level = "Bajo"
+1842:         else:
+1843:             outlook = "Inflación moderada"
+1844:             risk_level = "Moderado"
+1845:         
+1846:         volatility_assessment = "Alta" if volatility > 0.5 else "Moderada" if volatility > 0.2 else "Baja"
+1847:         
+1848:         return {
+1849:             'outlook': outlook,
+1850:             'risk_level': risk_level,
+1851:             'volatility_assessment': volatility_assessment,
+1852:             'stability': "Estable" if volatility < 0.3 else "Inestable"
+1853:         }
+1854:     
+1855: def _assess_policy_implications(self, historical: Dict[str, Any], predictions: Dict[str, Any]) -> List[str]:
+1856:         """Assess monetary policy implications."""
+1857:         implications = []
+1858:         
+1859:         pred_mean = predictions.get('statistics', {}).get('mean', 0)
+1860:         trend = predictions.get('trajectory', {}).get('overall_trend', 'stable')
+1861:         
+1862:         # ECB target is around 2%
+1863:         if pred_mean < 1:
+1864:             implications.append("Política monetaria expansiva podría ser necesaria para estimular la inflación")
+1865:         elif pred_mean > 3:
+1866:             implications.append("Política monetaria restrictiva podría ser necesaria para controlar la inflación")
+1867:         else:
+1868:             implications.append("Inflación cerca del objetivo del BCE (2%), política monetaria neutral apropiada")
+1869:         
+1870:         if trend == 'increasing':
+1871:             implications.append("Tendencia creciente sugiere vigilancia de presiones inflacionarias")
+1872:         elif trend == 'decreasing':
+1873:             implications.append("Tendencia decreciente requiere monitoreo de riesgos deflacionarios")
+1874:         
+1875:         volatility = predictions.get('trajectory', {}).get('volatility', 0)
+1876:         if volatility > 0.5:
+1877:             implications.append("Alta volatilidad sugiere incertidumbre económica elevada")
+1878:         
+1879:         return implications
+1880:     
+1881: def _assess_risks(self, historical: Dict[str, Any], predictions: Dict[str, Any]) -> Dict[str, List[str]]:
+1882:         """Assess economic risks based on analysis."""
+1883:         risks = {
+1884:             'upside_risks': [],
+1885:             'downside_risks': [],
+1886:             'structural_risks': []
+1887:         }
+1888:         
+1889:         pred_mean = predictions.get('statistics', {}).get('mean', 0)
+1890:         pred_max = predictions.get('statistics', {}).get('max', 0)
+1891:         pred_min = predictions.get('statistics', {}).get('min', 0)
+1892:         
+1893:         # Upside risks (higher inflation)
+1894:         if pred_max > 4:
+1895:             risks['upside_risks'].append("Riesgo de inflación alta en algunos períodos")
+1896:         if predictions.get('trajectory', {}).get('overall_trend') == 'increasing':
+1897:             risks['upside_risks'].append("Tendencia creciente podría acelerar más de lo previsto")
+1898:         
+1899:         # Downside risks (lower inflation/deflation)
+1900:         if pred_min < 0:
+1901:             risks['downside_risks'].append("Riesgo de períodos deflacionarios")
+1902:         if pred_mean < 1:
+1903:             risks['downside_risks'].append("Inflación persistentemente baja")
+1904:         
+1905:         # Structural risks
+1906:         volatility = predictions.get('trajectory', {}).get('volatility', 0)
+1907:         if volatility > 0.5:
+1908:             risks['structural_risks'].append("Alta volatilidad indica incertidumbre estructural")
+1909:         
+1910:         confidence = predictions.get('confidence', {})
+1911:         if confidence.get('avg_confidence_width', 0) > 2:
+1912:             risks['structural_risks'].append("Amplios intervalos de confianza indican alta incertidumbre")
+1913:         
+1914:         return risks
+1915:     
+1916: def _assess_model_reliability(self, model_results: Dict[str, Any]) -> Dict[str, Any]:
+1917:         """Assess model reliability based on performance metrics."""
+1918:         reliability = {
+1919:             'overall_assessment': 'No disponible',
+1920:             'best_model': 'No identificado',
+1921:             'performance_summary': {}
+1922:         }
+1923:         
+1924:         if not model_results:
+1925:             return reliability
+1926:         
+1927:         # Find best performing model
+1928:         best_model = None
+1929:         best_mae = float('inf')
+1930:         
+1931:         for model_name, results in model_results.items():
+1932:             if results.get('status') == 'success':
+1933:                 metrics = results.get('metrics', {})
+1934:                 mae = metrics.get('MAE', float('inf'))
+1935:                 if mae < best_mae:
+1936:                     best_mae = mae
+1937:                     best_model = model_name
+1938:         
+1939:         if best_model:
+1940:             reliability['best_model'] = best_model.replace('_', ' ').title()
+1941:             best_metrics = model_results[best_model].get('metrics', {})
+1942:             
+1943:             # Assess performance
+1944:             mae = best_metrics.get('MAE', 0)
+1945:             mape = best_metrics.get('MAPE', 0)
+1946:             
+1947:             if mae < 0.5 and mape < 10:
+1948:                 assessment = "Excelente"
+1949:             elif mae < 1.0 and mape < 20:
+1950:                 assessment = "Buena"
+1951:             elif mae < 2.0 and mape < 30:
+1952:                 assessment = "Moderada"
+1953:             else:
+1954:                 assessment = "Limitada"
+1955:             
+1956:             reliability['overall_assessment'] = assessment
+1957:             reliability['performance_summary'] = {
+1958:                 'MAE': f"{mae:.3f}",
+1959:                 'RMSE': f"{best_metrics.get('RMSE', 0):.3f}",
+1960:                 'MAPE': f"{mape:.1f}%"
+1961:             }
+1962:         
+1963:         return reliability
+1964:     
+1965: def _generate_conclusions(self, historical: Dict[str, Any], 
+1966:                             predictions: Dict[str, Any],
+1967:                             interpretation: Dict[str, Any]) -> List[str]:
+1968:         """Generate conclusions about inflation trends."""
+1969:         conclusions = []
+1970:         
+1971:         # Historical conclusions
+1972:         hist_stats = historical.get('statistics', {})
+1973:         if hist_stats.get('mean', 0) > 0:
+1974:             conclusions.append(f"La inflación histórica promedio fue de {hist_stats['mean']:.2f}%, "
+1975:                              f"con una volatilidad de {hist_stats['std']:.2f}%")
+1976:         
+1977:         # Prediction conclusions
+1978:         pred_stats = predictions.get('statistics', {})
+1979:         trajectory = predictions.get('trajectory', {})
+1980:         
+1981:         conclusions.append(f"Las predicciones indican una inflación promedio de {pred_stats.get('mean', 0):.2f}% "
+1982:                          f"para los próximos 12 meses")
+1983:         
+1984:         if trajectory.get('overall_trend') == 'increasing':
+1985:             conclusions.append("Se espera una tendencia creciente en la inflación durante el período de predicción")
+1986:         elif trajectory.get('overall_trend') == 'decreasing':
+1987:             conclusions.append("Se espera una tendencia decreciente en la inflación durante el período de predicción")
+1988:         else:
+1989:             conclusions.append("Se espera una inflación relativamente estable durante el período de predicción")
+1990:         
+1991:         # Regime conclusions
+1992:         regime = interpretation.get('inflation_regime', {})
+1993:         if regime.get('regime_change') == 'Sí':
+1994:             conclusions.append(f"Se anticipa un cambio de régimen inflacionario: "
+1995:                              f"de {regime.get('historical_regime', 'N/A')} "
+1996:                              f"a {regime.get('predicted_regime', 'N/A')}")
+1997:         
+1998:         # Risk conclusions
+1999:         outlook = interpretation.get('economic_outlook', {})
+2000:         risk_level = outlook.get('risk_level', 'Desconocido')
+2001:         conclusions.append(f"El nivel de riesgo económico se evalúa como: {risk_level}")
+2002:         
+2003:         return conclusions
+2004:     
+2005: def _generate_recommendations(self, analysis: Dict[str, Any]) -> List[str]:
+2006:         """Generate policy and economic recommendations."""
+2007:         recommendations = []
+2008:         
+2009:         interpretation = analysis.get('economic_interpretation', {})
+2010:         predictions = analysis.get('prediction_analysis', {})
+2011:         
+2012:         # Policy recommendations
+2013:         policy_implications = interpretation.get('policy_implications', [])
+2014:         if policy_implications:
+2015:             recommendations.extend(policy_implications)
+2016:         
+2017:         # Monitoring recommendations
+2018:         outlook = interpretation.get('economic_outlook', {})
+2019:         if outlook.get('volatility_assessment') == 'Alta':
+2020:             recommendations.append("Se recomienda monitoreo frecuente debido a la alta volatilidad esperada")
+2021:         
+2022:         confidence = predictions.get('confidence', {})
+2023:         if confidence.get('avg_confidence_width', 0) > 2:
+2024:             recommendations.append("Los amplios intervalos de confianza sugieren cautela en la interpretación")
+2025:         
+2026:         # Risk management recommendations
+2027:         risks = interpretation.get('risk_assessment', {})
+2028:         if risks.get('upside_risks'):
+2029:             recommendations.append("Preparar medidas preventivas contra presiones inflacionarias")
+2030:         if risks.get('downside_risks'):
+2031:             recommendations.append("Considerar estímulos económicos ante riesgos deflacionarios")
+2032:         
+2033:         return recommendations
+2034:     
+2035: def create_technical_report(self, analysis: Dict[str, Any], 
+2036:                             visualizations: Dict[str, str],
+2037:                             model_results: Optional[Dict[str, Any]] = None,
+2038:                             output_filename: Optional[str] = None) -> str:
+2039:     """
+2040:     Create technical report for PDF generation using reportlab.
+2041:     
+2042:     Generates a comprehensive PDF report with methodology, results,
+2043:     and economic analysis.
+2044:     
+2045:     Args:
+2046:         analysis (Dict[str, Any]): Economic analysis results
+2047:         visualizations (Dict[str, str]): Dictionary of plot file paths
+2048:         model_results (Dict[str, Any], optional): Model evaluation results
+2049:         output_filename (str, optional): Output PDF filename
+2050:         
+2051:     Returns:
+2052:         str: Path to generated PDF report
+2053:     """
+2054:     if not _REPORTLAB_AVAILABLE:
+2055:         raise ImportError("reportlab is required for PDF generation. "
+2056:                         "Install with: pip install reportlab")
+2057:     
+2058:     if output_filename is None:
+2059:         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+2060:         output_filename = f"informe_tecnico_inflacion_{timestamp}.pdf"
+2061:     
+2062:     output_path = self.reports_dir / output_filename
+2063:     
+2064:     self.logger.info(f"Creating technical PDF report: {output_path}")
+2065:     
+2066:     try:
+2067:         # Create PDF document
+2068:         doc = SimpleDocTemplate(str(output_path), pagesize=A4,
+2069:                                 rightMargin=72, leftMargin=72,
+2070:                                 topMargin=72, bottomMargin=18)
+2071:         
+2072:         # Build story (content)
+2073:         story = []
+2074:         styles = getSampleStyleSheet()
+2075:         
+2076:         # Custom styles
+2077:         title_style = ParagraphStyle(
+2078:             'CustomTitle',
+2079:             parent=styles['Heading1'],
+2080:             fontSize=18,
+2081:             spaceAfter=30,
+2082:             alignment=1,  # Center
+2083:             textColor=colors.darkblue
+2084:         )
+2085:         
+2086:         heading_style = ParagraphStyle(
+2087:             'CustomHeading',
+2088:             parent=styles['Heading2'],
+2089:             fontSize=14,
+2090:             spaceAfter=12,
+2091:             textColor=colors.darkblue
+2092:         )
+2093:         
+2094:         # Title page
+2095:         story.append(Paragraph("INFORME TÉCNICO", title_style))
+2096:         story.append(Paragraph("Predicción de Inflación en España", title_style))
+2097:         story.append(Spacer(1, 20))
+2098:         
+2099:         # Date and summary
+2100:         story.append(Paragraph(f"Fecha: {datetime.now().strftime('%d/%m/%Y')}", styles['Normal']))
+2101:         story.append(Paragraph(f"Generado por: Sistema de Predicción de Inflación IA", styles['Normal']))
+2102:         story.append(Spacer(1, 30))
+2103:         
+2104:         # Executive Summary
+2105:         story.append(Paragraph("RESUMEN EJECUTIVO", heading_style))
+2106:         
+2107:         pred_analysis = analysis.get('prediction_analysis', {})
+2108:         pred_stats = pred_analysis.get('statistics', {})
+2109:         
+2110:         summary_text = f"""
+2111:         Este informe presenta los resultados del análisis predictivo de la inflación en España 
+2112:         utilizando modelos de inteligencia artificial. Las predicciones indican una inflación 
+2113:         promedio de {pred_stats.get('mean', 0):.2f}% para los próximos 12 meses, con un rango 
+2114:         de {pred_stats.get('min', 0):.2f}% a {pred_stats.get('max', 0):.2f}%.
+2115:         """
+2116:         story.append(Paragraph(summary_text, styles['Normal']))
+2117:         story.append(Spacer(1, 20))
+2118:         
+2119:         # Methodology section
+2120:         story.append(Paragraph("1. METODOLOGÍA", heading_style))
+2121:         
+2122:         methodology_text = """
+2123:         <b>Fuente de Datos:</b> Instituto Nacional de Estadística (INE) - Índice de Precios al Consumo (IPC)<br/>
+2124:         <b>Modelos Utilizados:</b> ARIMA, Random Forest, LSTM (Long Short-Term Memory)<br/>
+2125:         <b>Período de Análisis:</b> Datos históricos desde 2002<br/>
+2126:         <b>Horizonte de Predicción:</b> 12 meses<br/>
+2127:         <b>Métricas de Evaluación:</b> MAE (Error Absoluto Medio), RMSE (Raíz del Error Cuadrático Medio), MAPE (Error Porcentual Absoluto Medio)
+2128:         """
+2129:         story.append(Paragraph(methodology_text, styles['Normal']))
+2130:         story.append(Spacer(1, 20))
+2131:         
+2132:         # Model Performance section
+2133:         if model_results:
+2134:             story.append(Paragraph("2. RENDIMIENTO DE MODELOS", heading_style))
+2135:             
+2136:             # Create performance table
+2137:             model_data = [['Modelo', 'MAE', 'RMSE', 'MAPE (%)', 'Estado']]
+2138:             
+2139:             for model_name, results in model_results.items():
+2140:                 if results.get('status') == 'success':
+2141:                     metrics = results.get('metrics', {})
+2142:                     model_data.append([
+2143:                         model_name.replace('_', ' ').title(),
+2144:                         f"{metrics.get('MAE', 0):.3f}",
+2145:                         f"{metrics.get('RMSE', 0):.3f}",
+2146:                         f"{metrics.get('MAPE', 0):.1f}",
+2147:                         "Exitoso"
+2148:                     ])
+2149:                 else:
+2150:                     model_data.append([
+2151:                         model_name.replace('_', ' ').title(),
+2152:                         "N/A", "N/A", "N/A", "Error"
+2153:                     ])
+2154:             
+2155:             model_table = Table(model_data)
+2156:             model_table.setStyle(TableStyle([
+2157:                 ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+2158:                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+2159:                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+2160:                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+2161:                 ('FONTSIZE', (0, 0), (-1, 0), 12),
+2162:                 ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+2163:                 ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+2164:                 ('GRID', (0, 0), (-1, -1), 1, colors.black)
+2165:             ]))
+2166:             
+2167:             story.append(model_table)
+2168:             story.append(Spacer(1, 20))
+2169:         
+2170:         # Add visualizations
+2171:         story.append(Paragraph("3. ANÁLISIS VISUAL", heading_style))
+2172:         
+2173:         for plot_type, plot_path in visualizations.items():
+2174:             if Path(plot_path).exists():
+2175:                 try:
+2176:                     # Add plot title
+2177:                     plot_titles = {
+2178:                         'time_series': 'Evolución Histórica y Predicciones',
+2179:                         'model_comparison': 'Comparación de Rendimiento de Modelos',
+2180:                         'prediction_distribution': 'Distribución de Predicciones',
+2181:                         'confidence_intervals': 'Intervalos de Confianza',
+2182:                         'historical_analysis': 'Análisis Histórico',
+2183:                         'seasonal_decomposition': 'Descomposición Estacional'
+2184:                     }
+2185:                     
+2186:                     title = plot_titles.get(plot_type, plot_type.replace('_', ' ').title())
+2187:                     story.append(Paragraph(f"3.{len([p for p in visualizations.keys() if visualizations[p] and Path(visualizations[p]).exists() and list(visualizations.keys()).index(p) <= list(visualizations.keys()).index(plot_type)])}. {title}", styles['Heading3']))
+2188:                     
+2189:                     # Add image
+2190:                     img = Image(plot_path, width=6*inch, height=4*inch)
+2191:                     story.append(img)
+2192:                     story.append(Spacer(1, 15))
+2193:                     
+2194:                 except Exception as e:
+2195:                     self.logger.warning(f"Could not add plot {plot_type}: {e}")
+2196:         
+2197:         # Economic Analysis section
+2198:         story.append(Paragraph("4. ANÁLISIS ECONÓMICO", heading_style))
+2199:         
+2200:         # Historical analysis
+2201:         hist_analysis = analysis.get('historical_analysis', {})
+2202:         hist_stats = hist_analysis.get('statistics', {})
+2203:         
+2204:         if hist_stats:
+2205:             hist_text = f"""
+2206:             <b>Análisis Histórico:</b><br/>
+2207:             • Inflación promedio histórica: {hist_stats.get('mean', 0):.2f}%<br/>
+2208:             • Desviación estándar: {hist_stats.get('std', 0):.2f}%<br/>
+2209:             • Rango: {hist_stats.get('min', 0):.2f}% - {hist_stats.get('max', 0):.2f}%<br/>
+2210:             • Número de observaciones: {hist_stats.get('count', 0)}
+2211:             """
+2212:             story.append(Paragraph(hist_text, styles['Normal']))
+2213:             story.append(Spacer(1, 10))
+2214:         
+2215:         # Prediction analysis
+2216:         if pred_stats:
+2217:             pred_text = f"""
+2218:             <b>Análisis de Predicciones:</b><br/>
+2219:             • Inflación promedio predicha: {pred_stats.get('mean', 0):.2f}%<br/>
+2220:             • Desviación estándar: {pred_stats.get('std', 0):.2f}%<br/>
+2221:             • Rango predicho: {pred_stats.get('min', 0):.2f}% - {pred_stats.get('max', 0):.2f}%<br/>
+2222:             • Horizonte de predicción: {pred_stats.get('count', 0)} meses
+2223:             """
+2224:             story.append(Paragraph(pred_text, styles['Normal']))
+2225:             story.append(Spacer(1, 10))
+2226:         
+2227:         # Economic interpretation
+2228:         interpretation = analysis.get('economic_interpretation', {})
+2229:         
+2230:         # Inflation regime
+2231:         regime = interpretation.get('inflation_regime', {})
+2232:         if regime:
+2233:             regime_text = f"""
+2234:             <b>Régimen Inflacionario:</b><br/>
+2235:             • Régimen histórico: {regime.get('historical_regime', 'N/A')}<br/>
+2236:             • Régimen predicho: {regime.get('predicted_regime', 'N/A')}<br/>
+2237:             • Cambio de régimen: {regime.get('regime_change', 'N/A')}
+2238:             """
+2239:             story.append(Paragraph(regime_text, styles['Normal']))
+2240:             story.append(Spacer(1, 10))
+2241:         
+2242:         # Economic outlook
+2243:         outlook = interpretation.get('economic_outlook', {})
+2244:         if outlook:
+2245:             outlook_text = f"""
+2246:             <b>Perspectiva Económica:</b><br/>
+2247:             • Evaluación: {outlook.get('outlook', 'N/A')}<br/>
+2248:             • Nivel de riesgo: {outlook.get('risk_level', 'N/A')}<br/>
+2249:             • Volatilidad: {outlook.get('volatility_assessment', 'N/A')}<br/>
+2250:             • Estabilidad: {outlook.get('stability', 'N/A')}
+2251:             """
+2252:             story.append(Paragraph(outlook_text, styles['Normal']))
+2253:             story.append(Spacer(1, 20))
+2254:         
+2255:         # Conclusions section
+2256:         story.append(Paragraph("5. CONCLUSIONES", heading_style))
+2257:         
+2258:         conclusions = analysis.get('conclusions', [])
+2259:         if conclusions:
+2260:             for i, conclusion in enumerate(conclusions, 1):
+2261:                 story.append(Paragraph(f"{i}. {conclusion}", styles['Normal']))
+2262:                 story.append(Spacer(1, 8))
+2263:         else:
+2264:             story.append(Paragraph("No se generaron conclusiones específicas.", styles['Normal']))
+2265:         
+2266:         story.append(Spacer(1, 20))
+2267:         
+2268:         # Recommendations section
+2269:         story.append(Paragraph("6. RECOMENDACIONES", heading_style))
+2270:         
+2271:         recommendations = analysis.get('recommendations', [])
+2272:         if recommendations:
+2273:             for i, recommendation in enumerate(recommendations, 1):
+2274:                 story.append(Paragraph(f"{i}. {recommendation}", styles['Normal']))
+2275:                 story.append(Spacer(1, 8))
+2276:         else:
+2277:             story.append(Paragraph("No se generaron recomendaciones específicas.", styles['Normal']))
+2278:         
+2279:         # Risk Assessment section
+2280:         risks = interpretation.get('risk_assessment', {})
+2281:         if risks:
+2282:             story.append(Spacer(1, 20))
+2283:             story.append(Paragraph("7. EVALUACIÓN DE RIESGOS", heading_style))
+2284:             
+2285:             upside_risks = risks.get('upside_risks', [])
+2286:             if upside_risks:
+2287:                 story.append(Paragraph("<b>Riesgos al Alza:</b>", styles['Normal']))
+2288:                 for risk in upside_risks:
+2289:                     story.append(Paragraph(f"• {risk}", styles['Normal']))
+2290:                 story.append(Spacer(1, 8))
+2291:             
+2292:             downside_risks = risks.get('downside_risks', [])
+2293:             if downside_risks:
+2294:                 story.append(Paragraph("<b>Riesgos a la Baja:</b>", styles['Normal']))
+2295:                 for risk in downside_risks:
+2296:                     story.append(Paragraph(f"• {risk}", styles['Normal']))
+2297:                 story.append(Spacer(1, 8))
+2298:             
+2299:             structural_risks = risks.get('structural_risks', [])
+2300:             if structural_risks:
+2301:                 story.append(Paragraph("<b>Riesgos Estructurales:</b>", styles['Normal']))
+2302:                 for risk in structural_risks:
+2303:                     story.append(Paragraph(f"• {risk}", styles['Normal']))
+2304:         
+2305:         # Footer
+2306:         story.append(Spacer(1, 30))
+2307:         story.append(Paragraph("---", styles['Normal']))
+2308:         story.append(Paragraph(f"Informe generado automáticamente el {datetime.now().strftime('%d/%m/%Y a las %H:%M')}", 
+2309:                                 styles['Normal']))
+2310:         
+2311:         # Build PDF
+2312:         doc.build(story)
+2313:         
+2314:         self.logger.info(f"Technical report created successfully: {output_path}")
+2315:         return str(output_path)
+2316:         
+2317:     except Exception as e:
+2318:         self.logger.error(f"Error creating technical report: {e}")
+2319:         raise
+2320: 
+2321: def export_code_screenshots(self, source_dir: str = "src", 
+2322:                             output_dir: Optional[str] = None) -> Dict[str, str]:
+2323:     """
+2324:     Export code screenshots for process documentation.
+2325:     
+2326:     Creates documentation of the source code by capturing
+2327:     code snippets and saving them as formatted text files.
+2328:     
+2329:     Args:
+2330:         source_dir (str): Directory containing source code
+2331:         output_dir (str, optional): Output directory for code documentation
+2332:         
+2333:     Returns:
+2334:         Dict[str, str]: Dictionary mapping file names to documentation paths
+2335:     """
+2336:     if output_dir is None:
+2337:         output_dir = self.reports_dir / "code_documentation"
+2338:     else:
+2339:         output_dir = Path(output_dir)
+2340:     
+2341:     output_dir.mkdir(parents=True, exist_ok=True)
+2342:     
+2343:     self.logger.info(f"Exporting code documentation from {source_dir} to {output_dir}")
+2344:     
+2345:     documented_files = {}
+2346:     source_path = Path(source_dir)
+2347:     
+2348:     if not source_path.exists():
+2349:         self.logger.warning(f"Source directory {source_dir} does not exist")
+2350:         return documented_files
+2351:     
+2352:     try:
+2353:         # Find all Python files
+2354:         python_files = list(source_path.glob("*.py"))
+2355:         
+2356:         for py_file in python_files:
+2357:             try:
+2358:                 # Read source code
+2359:                 with open(py_file, 'r', encoding='utf-8') as f:
+2360:                     code_content = f.read()
+2361:                 
+2362:                 # Create formatted documentation
+2363:                 doc_content = self._format_code_documentation(py_file.name, code_content)
+2364:                 
+2365:                 # Save documentation
+2366:                 doc_filename = f"{py_file.stem}_documentation.txt"
+2367:                 doc_path = output_dir / doc_filename
+2368:                 
+2369:                 with open(doc_path, 'w', encoding='utf-8') as f:
+2370:                     f.write(doc_content)
+2371:                 
+2372:                 documented_files[py_file.name] = str(doc_path)
+2373:                 self.logger.info(f"Documented {py_file.name}")
+2374:                 
+2375:             except Exception as e:
+2376:                 self.logger.warning(f"Could not document {py_file}: {e}")
+2377:         
+2378:         # Create summary documentation
+2379:         summary_path = self._create_code_summary(documented_files, output_dir)
+2380:         if summary_path:
+2381:             documented_files['_summary'] = summary_path
+2382:         
+2383:         # Create process flow documentation
+2384:         process_path = self._create_process_documentation(output_dir)
+2385:         if process_path:
+2386:             documented_files['_process_flow'] = process_path
+2387:         
+2388:         self.logger.info(f"Code documentation completed. {len(documented_files)} files documented.")
+2389:         return documented_files
+2390:         
+2391:     except Exception as e:
+2392:         self.logger.error(f"Error exporting code documentation: {e}")
+2393:         raise
+2394: 
+2395: def _format_code_documentation(self, filename: str, code_content: str) -> str:
+2396:     """Format code content for documentation."""
+2397:     lines = code_content.split('\n')
+2398:     
+2399:     doc_lines = [
+2400:         "=" * 80,
+2401:         f"DOCUMENTACIÓN DE CÓDIGO: {filename}",
+2402:         "=" * 80,
+2403:         f"Fecha de generación: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}",
+2404:         f"Número de líneas: {len(lines)}",
+2405:         "",
+2406:         "CONTENIDO DEL ARCHIVO:",
+2407:         "-" * 40,
+2408:         ""
+2409:     ]
+2410:     
+2411:     # Add line numbers and content
+2412:     for i, line in enumerate(lines, 1):
+2413:         doc_lines.append(f"{i:4d}: {line}")
+2414:     
+2415:     doc_lines.extend([
+2416:         "",
+2417:         "-" * 40,
+2418:         "FIN DEL ARCHIVO",
+2419:         "=" * 80
+2420:     ])
+2421:     
+2422:     return '\n'.join(doc_lines)
+2423: 
+2424: def _create_code_summary(self, documented_files: Dict[str, str], output_dir: Path) -> Optional[str]:
+2425:     """Create a summary of all documented code files."""
+2426:     try:
+2427:         summary_content = [
+2428:             "=" * 80,
+2429:             "RESUMEN DE DOCUMENTACIÓN DE CÓDIGO",
+2430:             "=" * 80,
+2431:             f"Fecha de generación: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}",
+2432:             f"Total de archivos documentados: {len([f for f in documented_files.keys() if not f.startswith('_')])}",
+2433:             "",
+2434:             "ARCHIVOS DOCUMENTADOS:",
+2435:             "-" * 40
+2436:         ]
+2437:         
+2438:         for filename, doc_path in documented_files.items():
+2439:             if not filename.startswith('_'):
+2440:                 summary_content.append(f"• {filename} -> {Path(doc_path).name}")
+2441:         
+2442:         summary_content.extend([
+2443:             "",
+2444:             "ESTRUCTURA DEL SISTEMA:",
+2445:             "-" * 40,
+2446:             "• ine_extractor.py: Descarga de datos del INE",
+2447:             "• data_cleaner.py: Limpieza y procesamiento de datos",
+2448:             "• feature_engineering.py: Ingeniería de características",
+2449:             "• model_trainer.py: Entrenamiento de modelos de IA",
+2450:             "• predictor.py: Generación de predicciones",
+2451:             "• report_generator.py: Generación de informes y visualizaciones",
+2452:             "",
+2453:             "FLUJO DE PROCESAMIENTO:",
+2454:             "-" * 40,
+2455:             "1. Extracción de datos (INE) -> datos brutos",
+2456:             "2. Limpieza de datos -> datos procesados",
+2457:             "3. Ingeniería de características -> características para ML",
+2458:             "4. Entrenamiento de modelos -> modelos entrenados",
+2459:             "5. Generación de predicciones -> predicciones futuras",
+2460:             "6. Generación de informes -> análisis y visualizaciones",
+2461:             "",
+2462:             "=" * 80
+2463:         ])
+2464:         
+2465:         summary_path = output_dir / "resumen_documentacion.txt"
+2466:         with open(summary_path, 'w', encoding='utf-8') as f:
+2467:             f.write('\n'.join(summary_content))
+2468:         
+2469:         return str(summary_path)
+2470:         
+2471:     except Exception as e:
+2472:         self.logger.warning(f"Could not create code summary: {e}")
+2473:         return None
+2474: 
+2475: def _create_process_documentation(self, output_dir: Path) -> Optional[str]:
+2476:     """Create process flow documentation."""
+2477:     try:
+2478:         process_content = [
+2479:             "=" * 80,
+2480:             "DOCUMENTACIÓN DEL PROCESO DE PREDICCIÓN DE INFLACIÓN",
+2481:             "=" * 80,
+2482:             f"Fecha de generación: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}",
+2483:             "",
+2484:             "DESCRIPCIÓN GENERAL:",
+2485:             "-" * 40,
+2486:             "Sistema automatizado para la predicción de la tasa de inflación en España",
+2487:             "utilizando datos del Instituto Nacional de Estadística (INE) y modelos de",
+2488:             "inteligencia artificial (ARIMA, Random Forest, LSTM).",
+2489:             "",
+2490:             "COMPONENTES PRINCIPALES:",
+2491:             "-" * 40,
+2492:             "",
+2493:             "1. EXTRACTOR DE DATOS INE (ine_extractor.py)",
+2494:             "   • Conecta con la API del INE",
+2495:             "   • Descarga datos de IPC general, por grupos e IPCA",
+2496:             "   • Maneja errores de conexión con reintentos",
+2497:             "   • Guarda datos en formato CSV",
+2498:             "",
+2499:             "2. PROCESADOR DE DATOS (data_cleaner.py)",
+2500:             "   • Carga datos brutos desde CSV",
+2501:             "   • Detecta y corrige valores faltantes",
+2502:             "   • Identifica y trata outliers estadísticos",
+2503:             "   • Normaliza fechas y calcula tasas de inflación",
+2504:             "",
+2505:             "3. INGENIERO DE CARACTERÍSTICAS (feature_engineering.py)",
+2506:             "   • Crea características lag (1, 3, 6, 12 meses)",
+2507:             "   • Genera medias móviles y componentes estacionales",
+2508:             "   • Prepara datos para modelos de machine learning",
+2509:             "",
+2510:             "4. ENTRENADOR DE MODELOS (model_trainer.py)",
+2511:             "   • Implementa modelos ARIMA, Random Forest y LSTM",
+2512:             "   • Divide datos en entrenamiento y validación",
+2513:             "   • Evalúa modelos con métricas MAE, RMSE, MAPE",
+2514:             "   • Selecciona el mejor modelo automáticamente",
+2515:             "",
+2516:             "5. PREDICTOR (predictor.py)",
+2517:             "   • Carga el mejor modelo entrenado",
+2518:             "   • Genera predicciones para 12 meses",
+2519:             "   • Calcula intervalos de confianza",
+2520:             "   • Valida y exporta predicciones",
+2521:             "",
+2522:             "6. GENERADOR DE INFORMES (report_generator.py)",
+2523:             "   • Crea visualizaciones con matplotlib/seaborn",
+2524:             "   • Genera análisis económico interpretativo",
+2525:             "   • Produce informes técnicos en PDF",
+2526:             "   • Documenta código fuente del proceso",
+2527:             "",
+2528:             "FLUJO DE EJECUCIÓN:",
+2529:             "-" * 40,
+2530:             "",
+2531:             "Paso 1: Descarga de Datos",
+2532:             "├── Conectar con API del INE",
+2533:             "├── Descargar IPC general (serie principal)",
+2534:             "├── Descargar IPC por grupos (sectorial)",
+2535:             "├── Descargar IPCA (armonizado europeo)",
+2536:             "└── Guardar en data/raw/",
+2537:             "",
+2538:             "Paso 2: Procesamiento de Datos",
+2539:             "├── Cargar datos brutos",
+2540:             "├── Limpiar valores faltantes (interpolación)",
+2541:             "├── Detectar outliers (IQR, Z-score)",
+2542:             "├── Calcular tasas de inflación",
+2543:             "└── Guardar en data/processed/",
+2544:             "",
+2545:             "Paso 3: Ingeniería de Características",
+2546:             "├── Crear características lag",
+2547:             "├── Generar medias móviles",
+2548:             "├── Añadir componentes estacionales",
+2549:             "└── Preparar datasets para ML",
+2550:             "",
+2551:             "Paso 4: Entrenamiento de Modelos",
+2552:             "├── Dividir datos (80% entrenamiento, 20% validación)",
+2553:             "├── Entrenar ARIMA (series temporales)",
+2554:             "├── Entrenar Random Forest (no lineal)",
+2555:             "├── Entrenar LSTM (redes neuronales)",
+2556:             "├── Evaluar con métricas de error",
+2557:             "└── Seleccionar mejor modelo",
+2558:             "",
+2559:             "Paso 5: Generación de Predicciones",
+2560:             "├── Cargar mejor modelo",
+2561:             "├── Generar predicciones 12 meses",
+2562:             "├── Calcular intervalos de confianza",
+2563:             "└── Exportar resultados",
+2564:             "",
+2565:             "Paso 6: Generación de Informes",
+2566:             "├── Crear visualizaciones (6 tipos de gráficos)",
+2567:             "├── Generar análisis económico interpretativo",
+2568:             "├── Producir informe técnico PDF",
+2569:             "└── Documentar proceso y código",
+2570:             "",
+2571:             "MÉTRICAS DE EVALUACIÓN:",
+2572:             "-" * 40,
+2573:             "• MAE (Mean Absolute Error): Error absoluto promedio",
+2574:             "• RMSE (Root Mean Square Error): Raíz del error cuadrático medio",
+2575:             "• MAPE (Mean Absolute Percentage Error): Error porcentual absoluto medio",
+2576:             "",
+2577:             "OUTPUTS GENERADOS:",
+2578:             "-" * 40,
+2579:             "• data/processed/: Datos limpios y procesados",
+2580:             "• models/: Modelos entrenados guardados",
+2581:             "• reports/: Visualizaciones, análisis y documentación",
+2582:             "• reports/informe_tecnico_*.pdf: Informe técnico completo",
+2583:             "",
+2584:             "CONFIGURACIÓN:",
+2585:             "-" * 40,
+2586:             "• config/config.yaml: Parámetros del sistema",
+2587:             "• requirements.txt: Dependencias de Python",
+2588:             "",
+2589:             "=" * 80
+2590:         ]
+2591:         
+2592:         process_path = output_dir / "documentacion_proceso.txt"
+2593:         with open(process_path, 'w', encoding='utf-8') as f:
+2594:             f.write('\n'.join(process_content))
+2595:         
+2596:         return str(process_path)
+2597:         
+2598:     except Exception as e:
+2599:         self.logger.warning(f"Could not create process documentation: {e}")
+2600:         return None   
+2601: def generate_economic_analysis(self, data: pd.DataFrame, predictions: pd.DataFrame,
+2602:                                 model_results: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+2603:     """
+2604:     Generate economic analysis with interpretation.
+2605:     
+2606:     Implements interpretation of results and economic conclusions
+2607:     about inflation trends identified in the data and predictions.
+2608:     
+2609:     Args:
+2610:         data (pd.DataFrame): Historical inflation data
+2611:         predictions (pd.DataFrame): Model predictions
+2612:         model_results (Dict[str, Any], optional): Model evaluation results
+2613:         
+2614:     Returns:
+2615:         Dict[str, Any]: Economic analysis with interpretations and conclusions
+2616:     """
+2617:     self.logger.info("Generating economic analysis and interpretation")
+2618:     
+2619:     analysis = {
+2620:         'timestamp': datetime.now().isoformat(),
+2621:         'historical_analysis': {},
+2622:         'prediction_analysis': {},
+2623:         'economic_interpretation': {},
+2624:         'conclusions': [],
+2625:         'recommendations': []
+2626:     }
+2627:     
+2628:     try:
+2629:         # Historical data analysis
+2630:         analysis['historical_analysis'] = self._analyze_historical_data(data)
+2631:         
+2632:         # Prediction analysis
+2633:         analysis['prediction_analysis'] = self._analyze_predictions(predictions)
+2634:         
+2635:         # Economic interpretation
+2636:         analysis['economic_interpretation'] = self._generate_economic_interpretation(
+2637:             analysis['historical_analysis'], 
+2638:             analysis['prediction_analysis'],
+2639:             model_results
+2640:         )
+2641:         
+2642:         # Generate conclusions
+2643:         analysis['conclusions'] = self._generate_conclusions(
+2644:             analysis['historical_analysis'],
+2645:             analysis['prediction_analysis'],
+2646:             analysis['economic_interpretation']
+2647:         )
+2648:         
+2649:         # Generate recommendations
+2650:         analysis['recommendations'] = self._generate_recommendations(analysis)
+2651:         
+2652:         # Save analysis to JSON
+2653:         analysis_path = self.reports_dir / "economic_analysis.json"
+2654:         with open(analysis_path, 'w', encoding='utf-8') as f:
+2655:             json.dump(analysis, f, indent=2, ensure_ascii=False)
+2656:         
+2657:         self.logger.info(f"Economic analysis saved to {analysis_path}")
+2658:         return analysis
+2659:         
+2660:     except Exception as e:
+2661:         self.logger.error(f"Error generating economic analysis: {e}")
+2662:         raise
+2663: 
+2664: def _analyze_historical_data(self, data: pd.DataFrame) -> Dict[str, Any]:
+2665:     """Analyze historical inflation data."""
+2666:     inflation_col = self._find_inflation_column(data)
+2667:     if not inflation_col:
+2668:         return {'error': 'No inflation column found'}
+2669:     
+2670:     inflation_data = data[inflation_col].dropna()
+2671:     
+2672:     # Basic statistics
+2673:     stats = {
+2674:         'mean': float(np.mean(inflation_data)),
+2675:         'median': float(np.median(inflation_data)),
+2676:         'std': float(np.std(inflation_data)),
+2677:         'min': float(np.min(inflation_data)),
+2678:         'max': float(np.max(inflation_data)),
+2679:         'count': len(inflation_data)
+2680:     }
+2681:     
+2682:     # Periods analysis
+2683:     periods = {
+2684:         'high_inflation_periods': len(inflation_data[inflation_data > 3.0]),
+2685:         'low_inflation_periods': len(inflation_data[inflation_data < 1.0]),
+2686:         'deflation_periods': len(inflation_data[inflation_data < 0]),
+2687:         'stable_periods': len(inflation_data[(inflation_data >= 1.0) & (inflation_data <= 3.0)])
+2688:     }
+2689:     
+2690:     # Volatility analysis
+2691:     volatility = {
+2692:         'coefficient_variation': stats['std'] / abs(stats['mean']) if stats['mean'] != 0 else 0,
+2693:         'range': stats['max'] - stats['min'],
+2694:         'iqr': float(np.percentile(inflation_data, 75) - np.percentile(inflation_data, 25))
+2695:     }
+2696:     
+2697:     # Trend analysis
+2698:     if len(inflation_data) >= 12:
+2699:         recent_12m = inflation_data.tail(12)
+2700:         previous_12m = inflation_data.tail(24).head(12) if len(inflation_data) >= 24 else inflation_data.head(12)
+2701:         
+2702:         trend = {
+2703:             'recent_12m_avg': float(np.mean(recent_12m)),
+2704:             'previous_12m_avg': float(np.mean(previous_12m)),
+2705:             'trend_direction': 'increasing' if np.mean(recent_12m) > np.mean(previous_12m) else 'decreasing',
+2706:             'trend_magnitude': float(abs(np.mean(recent_12m) - np.mean(previous_12m)))
+2707:         }
+2708:     else:
+2709:         trend = {'insufficient_data': True}
+2710:     
+2711:     return {
+2712:         'statistics': stats,
+2713:         'periods': periods,
+2714:         'volatility': volatility,
+2715:         'trend': trend
+2716:     }
+2717: 
+2718: def _analyze_predictions(self, predictions: pd.DataFrame) -> Dict[str, Any]:
+2719:     """Analyze prediction results."""
+2720:     pred_values = predictions['predicted_inflation'].values
+2721:     
+2722:     # Basic prediction statistics
+2723:     pred_stats = {
+2724:         'mean': float(np.mean(pred_values)),
+2725:         'median': float(np.median(pred_values)),
+2726:         'std': float(np.std(pred_values)),
+2727:         'min': float(np.min(pred_values)),
+2728:         'max': float(np.max(pred_values)),
+2729:         'count': len(pred_values)
+2730:     }
+2731:     
+2732:     # Prediction trajectory
+2733:     trajectory = {
+2734:         'initial_prediction': float(pred_values[0]) if len(pred_values) > 0 else 0,
+2735:         'final_prediction': float(pred_values[-1]) if len(pred_values) > 0 else 0,
+2736:         'overall_trend': 'increasing' if pred_values[-1] > pred_values[0] else 'decreasing' if len(pred_values) > 1 else 'stable',
+2737:         'volatility': float(np.std(np.diff(pred_values))) if len(pred_values) > 1 else 0
+2738:     }
+2739:     
+2740:     # Confidence analysis
+2741:     confidence_analysis = {}
+2742:     if 'confidence_lower' in predictions.columns and 'confidence_upper' in predictions.columns:
+2743:         ci_width = predictions['confidence_upper'] - predictions['confidence_lower']
+2744:         confidence_analysis = {
+2745:             'avg_confidence_width': float(np.mean(ci_width)),
+2746:             'max_confidence_width': float(np.max(ci_width)),
+2747:             'min_confidence_width': float(np.min(ci_width)),
+2748:             'confidence_trend': 'increasing' if ci_width.iloc[-1] > ci_width.iloc[0] else 'decreasing' if len(ci_width) > 1 else 'stable'
+2749:         }
+2750:     
+2751:     # Economic classification
+2752:     economic_periods = {
+2753:         'high_inflation_months': len(pred_values[pred_values > 3.0]),
+2754:         'moderate_inflation_months': len(pred_values[(pred_values >= 1.0) & (pred_values <= 3.0)]),
+2755:         'low_inflation_months': len(pred_values[(pred_values >= 0) & (pred_values < 1.0)]),
+2756:         'deflation_months': len(pred_values[pred_values < 0])
+2757:     }
+2758:     
+2759:     return {
+2760:         'statistics': pred_stats,
+2761:         'trajectory': trajectory,
+2762:         'confidence': confidence_analysis,
+2763:         'economic_periods': economic_periods
+2764:     }
+2765: 
+2766: def _generate_economic_interpretation(self, historical: Dict[str, Any], 
+2767:                                     predictions: Dict[str, Any],
+2768:                                     model_results: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+2769:     """Generate economic interpretation of results."""
+2770:     interpretation = {
+2771:         'inflation_regime': self._classify_inflation_regime(historical, predictions),
+2772:         'economic_outlook': self._assess_economic_outlook(predictions),
+2773:         'policy_implications': self._assess_policy_implications(historical, predictions),
+2774:         'risk_assessment': self._assess_risks(historical, predictions),
+2775:         'model_reliability': self._assess_model_reliability(model_results) if model_results else {}
+2776:     }
+2777:     
+2778:     return interpretation
+2779: 
+2780: def _classify_inflation_regime(self, historical: Dict[str, Any], predictions: Dict[str, Any]) -> Dict[str, str]:
+2781:     """Classify the inflation regime based on historical and predicted data."""
+2782:     hist_mean = historical.get('statistics', {}).get('mean', 0)
+2783:     pred_mean = predictions.get('statistics', {}).get('mean', 0)
+2784:     
+2785:     # Historical regime
+2786:     if hist_mean < 0:
+2787:         hist_regime = "deflacionario"
+2788:     elif hist_mean < 1:
+2789:         hist_regime = "inflación muy baja"
+2790:     elif hist_mean <= 2:
+2791:         hist_regime = "inflación baja y estable"
+2792:     elif hist_mean <= 4:
+2793:         hist_regime = "inflación moderada"
+2794:     else:
+2795:         hist_regime = "inflación alta"
+2796:     
+2797:     # Predicted regime
+2798:     if pred_mean < 0:
+2799:         pred_regime = "deflacionario"
+2800:     elif pred_mean < 1:
+2801:         pred_regime = "inflación muy baja"
+2802:     elif pred_mean <= 2:
+2803:         pred_regime = "inflación baja y estable"
+2804:     elif pred_mean <= 4:
+2805:         pred_regime = "inflación moderada"
+2806:     else:
+2807:         pred_regime = "inflación alta"
+2808:     
+2809:     return {
+2810:         'historical_regime': hist_regime,
+2811:         'predicted_regime': pred_regime,
+2812:         'regime_change': 'Sí' if hist_regime != pred_regime else 'No'
+2813:     }
+2814: 
+2815: def _assess_economic_outlook(self, predictions: Dict[str, Any]) -> Dict[str, str]:
+2816:     """Assess economic outlook based on predictions."""
+2817:     trajectory = predictions.get('trajectory', {})
+2818:     stats = predictions.get('statistics', {})
+2819:     
+2820:     trend = trajectory.get('overall_trend', 'stable')
+2821:     volatility = trajectory.get('volatility', 0)
+2822:     mean_pred = stats.get('mean', 0)
+2823:     
+2824:     if trend == 'increasing' and mean_pred > 3:
+2825:         outlook = "Presiones inflacionarias crecientes"
+2826:         risk_level = "Alto"
+2827:     elif trend == 'decreasing' and mean_pred < 1:
+2828:         outlook = "Riesgo de deflación"
+2829:         risk_level = "Moderado-Alto"
+2830:     elif 1 <= mean_pred <= 2:
+2831:         outlook = "Estabilidad de precios"
+2832:         risk_level = "Bajo"
+2833:     else:
+2834:         outlook = "Inflación moderada"
+2835:         risk_level = "Moderado"
+2836:     
+2837:     volatility_assessment = "Alta" if volatility > 0.5 else "Moderada" if volatility > 0.2 else "Baja"
+2838:     
+2839:     return {
+2840:         'outlook': outlook,
+2841:         'risk_level': risk_level,
+2842:         'volatility_assessment': volatility_assessment,
+2843:         'stability': "Estable" if volatility < 0.3 else "Inestable"
+2844:     }
+2845: 
+2846: def _assess_policy_implications(self, historical: Dict[str, Any], predictions: Dict[str, Any]) -> List[str]:
+2847:     """Assess monetary policy implications."""
+2848:     implications = []
+2849:     
+2850:     pred_mean = predictions.get('statistics', {}).get('mean', 0)
+2851:     trend = predictions.get('trajectory', {}).get('overall_trend', 'stable')
+2852:     
+2853:     # ECB target is around 2%
+2854:     if pred_mean < 1:
+2855:         implications.append("Política monetaria expansiva podría ser necesaria para estimular la inflación")
+2856:     elif pred_mean > 3:
+2857:         implications.append("Política monetaria restrictiva podría ser necesaria para controlar la inflación")
+2858:     else:
+2859:         implications.append("Inflación cerca del objetivo del BCE (2%), política monetaria neutral apropiada")
+2860:     
+2861:     if trend == 'increasing':
+2862:         implications.append("Tendencia creciente sugiere vigilancia de presiones inflacionarias")
+2863:     elif trend == 'decreasing':
+2864:         implications.append("Tendencia decreciente requiere monitoreo de riesgos deflacionarios")
+2865:     
+2866:     volatility = predictions.get('trajectory', {}).get('volatility', 0)
+2867:     if volatility > 0.5:
+2868:         implications.append("Alta volatilidad sugiere incertidumbre económica elevada")
+2869:     
+2870:     return implications
+2871: 
+2872: def _assess_risks(self, historical: Dict[str, Any], predictions: Dict[str, Any]) -> Dict[str, List[str]]:
+2873:     """Assess economic risks based on analysis."""
+2874:     risks = {
+2875:         'upside_risks': [],
+2876:         'downside_risks': [],
+2877:         'structural_risks': []
+2878:     }
+2879:     
+2880:     pred_mean = predictions.get('statistics', {}).get('mean', 0)
+2881:     pred_max = predictions.get('statistics', {}).get('max', 0)
+2882:     pred_min = predictions.get('statistics', {}).get('min', 0)
+2883:     
+2884:     # Upside risks (higher inflation)
+2885:     if pred_max > 4:
+2886:         risks['upside_risks'].append("Riesgo de inflación alta en algunos períodos")
+2887:     if predictions.get('trajectory', {}).get('overall_trend') == 'increasing':
+2888:         risks['upside_risks'].append("Tendencia creciente podría acelerar más de lo previsto")
+2889:     
+2890:     # Downside risks (lower inflation/deflation)
+2891:     if pred_min < 0:
+2892:         risks['downside_risks'].append("Riesgo de períodos deflacionarios")
+2893:     if pred_mean < 1:
+2894:         risks['downside_risks'].append("Inflación persistentemente baja")
+2895:     
+2896:     # Structural risks
+2897:     volatility = predictions.get('trajectory', {}).get('volatility', 0)
+2898:     if volatility > 0.5:
+2899:         risks['structural_risks'].append("Alta volatilidad indica incertidumbre estructural")
+2900:     
+2901:     confidence = predictions.get('confidence', {})
+2902:     if confidence.get('avg_confidence_width', 0) > 2:
+2903:         risks['structural_risks'].append("Amplios intervalos de confianza indican alta incertidumbre")
+2904:     
+2905:     return risks
+2906: 
+2907: def _assess_model_reliability(self, model_results: Dict[str, Any]) -> Dict[str, Any]:
+2908:     """Assess model reliability based on performance metrics."""
+2909:     reliability = {
+2910:         'overall_assessment': 'No disponible',
+2911:         'best_model': 'No identificado',
+2912:         'performance_summary': {}
+2913:     }
+2914:     
+2915:     if not model_results:
+2916:         return reliability
+2917:     
+2918:     # Find best performing model
+2919:     best_model = None
+2920:     best_mae = float('inf')
+2921:     
+2922:     for model_name, results in model_results.items():
+2923:         if results.get('status') == 'success':
+2924:             metrics = results.get('metrics', {})
+2925:             mae = metrics.get('MAE', float('inf'))
+2926:             if mae < best_mae:
+2927:                 best_mae = mae
+2928:                 best_model = model_name
+2929:     
+2930:     if best_model:
+2931:         reliability['best_model'] = best_model.replace('_', ' ').title()
+2932:         best_metrics = model_results[best_model].get('metrics', {})
+2933:         
+2934:         # Assess performance
+2935:         mae = best_metrics.get('MAE', 0)
+2936:         mape = best_metrics.get('MAPE', 0)
+2937:         
+2938:         if mae < 0.5 and mape < 10:
+2939:             assessment = "Excelente"
+2940:         elif mae < 1.0 and mape < 20:
+2941:             assessment = "Buena"
+2942:         elif mae < 2.0 and mape < 30:
+2943:             assessment = "Moderada"
+2944:         else:
+2945:             assessment = "Limitada"
+2946:         
+2947:         reliability['overall_assessment'] = assessment
+2948:         reliability['performance_summary'] = {
+2949:             'MAE': f"{mae:.3f}",
+2950:             'RMSE': f"{best_metrics.get('RMSE', 0):.3f}",
+2951:             'MAPE': f"{mape:.1f}%"
+2952:         }
+2953:     
+2954:     return reliability
+2955: 
+2956: def _generate_conclusions(self, historical: Dict[str, Any], 
+2957:                         predictions: Dict[str, Any],
+2958:                         interpretation: Dict[str, Any]) -> List[str]:
+2959:     """Generate conclusions about inflation trends."""
+2960:     conclusions = []
+2961:     
+2962:     # Historical conclusions
+2963:     hist_stats = historical.get('statistics', {})
+2964:     if hist_stats.get('mean', 0) > 0:
+2965:         conclusions.append(f"La inflación histórica promedio fue de {hist_stats['mean']:.2f}%, "
+2966:                             f"con una volatilidad de {hist_stats['std']:.2f}%")
+2967:     
+2968:     # Prediction conclusions
+2969:     pred_stats = predictions.get('statistics', {})
+2970:     trajectory = predictions.get('trajectory', {})
+2971:     
+2972:     conclusions.append(f"Las predicciones indican una inflación promedio de {pred_stats.get('mean', 0):.2f}% "
+2973:                         f"para los próximos 12 meses")
+2974:     
+2975:     if trajectory.get('overall_trend') == 'increasing':
+2976:         conclusions.append("Se espera una tendencia creciente en la inflación durante el período de predicción")
+2977:     elif trajectory.get('overall_trend') == 'decreasing':
+2978:         conclusions.append("Se espera una tendencia decreciente en la inflación durante el período de predicción")
+2979:     else:
+2980:         conclusions.append("Se espera una inflación relativamente estable durante el período de predicción")
+2981:     
+2982:     # Regime conclusions
+2983:     regime = interpretation.get('inflation_regime', {})
+2984:     if regime.get('regime_change') == 'Sí':
+2985:         conclusions.append(f"Se anticipa un cambio de régimen inflacionario: "
+2986:                             f"de {regime.get('historical_regime', 'N/A')} "
+2987:                             f"a {regime.get('predicted_regime', 'N/A')}")
+2988:     
+2989:     # Risk conclusions
+2990:     outlook = interpretation.get('economic_outlook', {})
+2991:     risk_level = outlook.get('risk_level', 'Desconocido')
+2992:     conclusions.append(f"El nivel de riesgo económico se evalúa como: {risk_level}")
+2993:     
+2994:     return conclusions
+2995: 
+2996: def _generate_recommendations(self, analysis: Dict[str, Any]) -> List[str]:
+2997:     """Generate policy and economic recommendations."""
+2998:     recommendations = []
+2999:     
+3000:     interpretation = analysis.get('economic_interpretation', {})
+3001:     predictions = analysis.get('prediction_analysis', {})
+3002:     
+3003:     # Policy recommendations
+3004:     policy_implications = interpretation.get('policy_implications', [])
+3005:     if policy_implications:
+3006:         recommendations.extend(policy_implications)
+3007:     
+3008:     # Monitoring recommendations
+3009:     outlook = interpretation.get('economic_outlook', {})
+3010:     if outlook.get('volatility_assessment') == 'Alta':
+3011:         recommendations.append("Se recomienda monitoreo frecuente debido a la alta volatilidad esperada")
+3012:     
+3013:     confidence = predictions.get('confidence', {})
+3014:     if confidence.get('avg_confidence_width', 0) > 2:
+3015:         recommendations.append("Los amplios intervalos de confianza sugieren cautela en la interpretación")
+3016:     
+3017:     # Risk management recommendations
+3018:     risks = interpretation.get('risk_assessment', {})
+3019:     if risks.get('upside_risks'):
+3020:         recommendations.append("Preparar medidas preventivas contra presiones inflacionarias")
+3021:     if risks.get('downside_risks'):
+3022:         recommendations.append("Considerar estímulos económicos ante riesgos deflacionarios")
+3023:     
+3024:     return recommendations    
+3025: 
+3026: def create_technical_report(self, analysis: Dict[str, Any], 
+3027:                             visualizations: Dict[str, str],
+3028:                             model_results: Optional[Dict[str, Any]] = None,
+3029:                             output_filename: Optional[str] = None) -> str:
+3030:     """
+3031:     Create technical report for PDF generation using reportlab.
+3032:     
+3033:     Generates a comprehensive PDF report with methodology, results,
+3034:     and economic analysis.
+3035:     
+3036:     Args:
+3037:         analysis (Dict[str, Any]): Economic analysis results
+3038:         visualizations (Dict[str, str]): Dictionary of plot file paths
+3039:         model_results (Dict[str, Any], optional): Model evaluation results
+3040:         output_filename (str, optional): Output PDF filename
+3041:         
+3042:     Returns:
+3043:         str: Path to generated PDF report
+3044:     """
+3045:     if not _REPORTLAB_AVAILABLE:
+3046:         raise ImportError("reportlab is required for PDF generation. "
+3047:                         "Install with: pip install reportlab")
+3048:     
+3049:     if output_filename is None:
+3050:         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+3051:         output_filename = f"informe_tecnico_inflacion_{timestamp}.pdf"
+3052:     
+3053:     output_path = self.reports_dir / output_filename
+3054:     
+3055:     self.logger.info(f"Creating technical PDF report: {output_path}")
+3056:     
+3057:     try:
+3058:         # Create PDF document
+3059:         doc = SimpleDocTemplate(str(output_path), pagesize=A4,
+3060:                                 rightMargin=72, leftMargin=72,
+3061:                                 topMargin=72, bottomMargin=18)
+3062:         
+3063:         # Build story (content)
+3064:         story = []
+3065:         styles = getSampleStyleSheet()
+3066:         
+3067:         # Custom styles
+3068:         title_style = ParagraphStyle(
+3069:             'CustomTitle',
+3070:             parent=styles['Heading1'],
+3071:             fontSize=18,
+3072:             spaceAfter=30,
+3073:             alignment=1,  # Center
+3074:             textColor=colors.darkblue
+3075:         )
+3076:         
+3077:         heading_style = ParagraphStyle(
+3078:             'CustomHeading',
+3079:             parent=styles['Heading2'],
+3080:             fontSize=14,
+3081:             spaceAfter=12,
+3082:             textColor=colors.darkblue
+3083:         )
+3084:         
+3085:         # Title page
+3086:         story.append(Paragraph("INFORME TÉCNICO", title_style))
+3087:         story.append(Paragraph("Predicción de Inflación en España", title_style))
+3088:         story.append(Spacer(1, 20))
+3089:         
+3090:         # Date and summary
+3091:         story.append(Paragraph(f"Fecha: {datetime.now().strftime('%d/%m/%Y')}", styles['Normal']))
+3092:         story.append(Paragraph(f"Generado por: Sistema de Predicción de Inflación IA", styles['Normal']))
+3093:         story.append(Spacer(1, 30))
+3094:         
+3095:         # Executive Summary
+3096:         story.append(Paragraph("RESUMEN EJECUTIVO", heading_style))
+3097:         
+3098:         pred_analysis = analysis.get('prediction_analysis', {})
+3099:         pred_stats = pred_analysis.get('statistics', {})
+3100:         
+3101:         summary_text = f"""
+3102:         Este informe presenta los resultados del análisis predictivo de la inflación en España 
+3103:         utilizando modelos de inteligencia artificial. Las predicciones indican una inflación 
+3104:         promedio de {pred_stats.get('mean', 0):.2f}% para los próximos 12 meses, con un rango 
+3105:         de {pred_stats.get('min', 0):.2f}% a {pred_stats.get('max', 0):.2f}%.
+3106:         """
+3107:         story.append(Paragraph(summary_text, styles['Normal']))
+3108:         story.append(Spacer(1, 20))
+3109:         
+3110:         # Methodology section
+3111:         story.append(Paragraph("1. METODOLOGÍA", heading_style))
+3112:         
+3113:         methodology_text = """
+3114:         <b>Fuente de Datos:</b> Instituto Nacional de Estadística (INE) - Índice de Precios al Consumo (IPC)<br/>
+3115:         <b>Modelos Utilizados:</b> ARIMA, Random Forest, LSTM (Long Short-Term Memory)<br/>
+3116:         <b>Período de Análisis:</b> Datos históricos desde 2002<br/>
+3117:         <b>Horizonte de Predicción:</b> 12 meses<br/>
+3118:         <b>Métricas de Evaluación:</b> MAE (Error Absoluto Medio), RMSE (Raíz del Error Cuadrático Medio), MAPE (Error Porcentual Absoluto Medio)
+3119:         """
+3120:         story.append(Paragraph(methodology_text, styles['Normal']))
+3121:         story.append(Spacer(1, 20))
+3122:         
+3123:         # Model Performance section
+3124:         if model_results:
+3125:             story.append(Paragraph("2. RENDIMIENTO DE MODELOS", heading_style))
+3126:             
+3127:             # Create performance table
+3128:             model_data = [['Modelo', 'MAE', 'RMSE', 'MAPE (%)', 'Estado']]
+3129:             
+3130:             for model_name, results in model_results.items():
+3131:                 if results.get('status') == 'success':
+3132:                     metrics = results.get('metrics', {})
+3133:                     model_data.append([
+3134:                         model_name.replace('_', ' ').title(),
+3135:                         f"{metrics.get('MAE', 0):.3f}",
+3136:                         f"{metrics.get('RMSE', 0):.3f}",
+3137:                         f"{metrics.get('MAPE', 0):.1f}",
+3138:                         "Exitoso"
+3139:                     ])
+3140:                 else:
+3141:                     model_data.append([
+3142:                         model_name.replace('_', ' ').title(),
+3143:                         "N/A", "N/A", "N/A", "Error"
+3144:                     ])
+3145:             
+3146:             model_table = Table(model_data)
+3147:             model_table.setStyle(TableStyle([
+3148:                 ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+3149:                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+3150:                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+3151:                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+3152:                 ('FONTSIZE', (0, 0), (-1, 0), 12),
+3153:                 ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+3154:                 ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+3155:                 ('GRID', (0, 0), (-1, -1), 1, colors.black)
+3156:             ]))
+3157:             
+3158:             story.append(model_table)
+3159:             story.append(Spacer(1, 20))
+3160:         
+3161:         # Economic Analysis section
+3162:         story.append(Paragraph("3. ANÁLISIS ECONÓMICO", heading_style))
+3163:         
+3164:         # Historical analysis
+3165:         hist_analysis = analysis.get('historical_analysis', {})
+3166:         hist_stats = hist_analysis.get('statistics', {})
+3167:         
+3168:         if hist_stats:
+3169:             hist_text = f"""
+3170:             <b>Análisis Histórico:</b><br/>
+3171:             • Inflación promedio histórica: {hist_stats.get('mean', 0):.2f}%<br/>
+3172:             • Desviación estándar: {hist_stats.get('std', 0):.2f}%<br/>
+3173:             • Rango: {hist_stats.get('min', 0):.2f}% - {hist_stats.get('max', 0):.2f}%<br/>
+3174:             • Número de observaciones: {hist_stats.get('count', 0)}
+3175:             """
+3176:             story.append(Paragraph(hist_text, styles['Normal']))
+3177:             story.append(Spacer(1, 10))
+3178:         
+3179:         # Prediction analysis
+3180:         if pred_stats:
+3181:             pred_text = f"""
+3182:             <b>Análisis de Predicciones:</b><br/>
+3183:             • Inflación promedio predicha: {pred_stats.get('mean', 0):.2f}%<br/>
+3184:             • Desviación estándar: {pred_stats.get('std', 0):.2f}%<br/>
+3185:             • Rango predicho: {pred_stats.get('min', 0):.2f}% - {pred_stats.get('max', 0):.2f}%<br/>
+3186:             • Horizonte de predicción: {pred_stats.get('count', 0)} meses
+3187:             """
+3188:             story.append(Paragraph(pred_text, styles['Normal']))
+3189:             story.append(Spacer(1, 10))
+3190:         
+3191:         # Economic interpretation
+3192:         interpretation = analysis.get('economic_interpretation', {})
+3193:         
+3194:         # Inflation regime
+3195:         regime = interpretation.get('inflation_regime', {})
+3196:         if regime:
+3197:             regime_text = f"""
+3198:             <b>Régimen Inflacionario:</b><br/>
+3199:             • Régimen histórico: {regime.get('historical_regime', 'N/A')}<br/>
+3200:             • Régimen predicho: {regime.get('predicted_regime', 'N/A')}<br/>
+3201:             • Cambio de régimen: {regime.get('regime_change', 'N/A')}
+3202:             """
+3203:             story.append(Paragraph(regime_text, styles['Normal']))
+3204:             story.append(Spacer(1, 10))
+3205:         
+3206:         # Economic outlook
+3207:         outlook = interpretation.get('economic_outlook', {})
+3208:         if outlook:
+3209:             outlook_text = f"""
+3210:             <b>Perspectiva Económica:</b><br/>
+3211:             • Evaluación: {outlook.get('outlook', 'N/A')}<br/>
+3212:             • Nivel de riesgo: {outlook.get('risk_level', 'N/A')}<br/>
+3213:             • Volatilidad: {outlook.get('volatility_assessment', 'N/A')}<br/>
+3214:             • Estabilidad: {outlook.get('stability', 'N/A')}
+3215:             """
+3216:             story.append(Paragraph(outlook_text, styles['Normal']))
+3217:             story.append(Spacer(1, 20))
+3218:         
+3219:         # Conclusions section
+3220:         story.append(Paragraph("4. CONCLUSIONES", heading_style))
+3221:         
+3222:         conclusions = analysis.get('conclusions', [])
+3223:         if conclusions:
+3224:             for i, conclusion in enumerate(conclusions, 1):
+3225:                 story.append(Paragraph(f"{i}. {conclusion}", styles['Normal']))
+3226:                 story.append(Spacer(1, 8))
+3227:         else:
+3228:             story.append(Paragraph("No se generaron conclusiones específicas.", styles['Normal']))
+3229:         
+3230:         story.append(Spacer(1, 20))
+3231:         
+3232:         # Recommendations section
+3233:         story.append(Paragraph("5. RECOMENDACIONES", heading_style))
+3234:         
+3235:         recommendations = analysis.get('recommendations', [])
+3236:         if recommendations:
+3237:             for i, recommendation in enumerate(recommendations, 1):
+3238:                 story.append(Paragraph(f"{i}. {recommendation}", styles['Normal']))
+3239:                 story.append(Spacer(1, 8))
+3240:         else:
+3241:             story.append(Paragraph("No se generaron recomendaciones específicas.", styles['Normal']))
+3242:         
+3243:         # Risk Assessment section
+3244:         risks = interpretation.get('risk_assessment', {})
+3245:         if risks:
+3246:             story.append(Spacer(1, 20))
+3247:             story.append(Paragraph("6. EVALUACIÓN DE RIESGOS", heading_style))
+3248:             
+3249:             upside_risks = risks.get('upside_risks', [])
+3250:             if upside_risks:
+3251:                 story.append(Paragraph("<b>Riesgos al Alza:</b>", styles['Normal']))
+3252:                 for risk in upside_risks:
+3253:                     story.append(Paragraph(f"• {risk}", styles['Normal']))
+3254:                 story.append(Spacer(1, 8))
+3255:             
+3256:             downside_risks = risks.get('downside_risks', [])
+3257:             if downside_risks:
+3258:                 story.append(Paragraph("<b>Riesgos a la Baja:</b>", styles['Normal']))
+3259:                 for risk in downside_risks:
+3260:                     story.append(Paragraph(f"• {risk}", styles['Normal']))
+3261:                 story.append(Spacer(1, 8))
+3262:             
+3263:             structural_risks = risks.get('structural_risks', [])
+3264:             if structural_risks:
+3265:                 story.append(Paragraph("<b>Riesgos Estructurales:</b>", styles['Normal']))
+3266:                 for risk in structural_risks:
+3267:                     story.append(Paragraph(f"• {risk}", styles['Normal']))
+3268:         
+3269:         # Footer
+3270:         story.append(Spacer(1, 30))
+3271:         story.append(Paragraph("---", styles['Normal']))
+3272:         story.append(Paragraph(f"Informe generado automáticamente el {datetime.now().strftime('%d/%m/%Y a las %H:%M')}", 
+3273:                                 styles['Normal']))
+3274:         
+3275:         # Build PDF
+3276:         doc.build(story)
+3277:         
+3278:         self.logger.info(f"Technical report created successfully: {output_path}")
+3279:         return str(output_path)
+3280:         
+3281:     except Exception as e:
+3282:         self.logger.error(f"Error creating technical report: {e}")
+3283:         raise
+3284: 
+3285: def export_code_screenshots(self, source_dir: str = "src", 
+3286:                             output_dir: Optional[str] = None) -> Dict[str, str]:
+3287:     """
+3288:     Export code screenshots for process documentation.
+3289:     
+3290:     Creates documentation of the source code by capturing
+3291:     code snippets and saving them as formatted text files.
+3292:     
+3293:     Args:
+3294:         source_dir (str): Directory containing source code
+3295:         output_dir (str, optional): Output directory for code documentation
+3296:         
+3297:     Returns:
+3298:         Dict[str, str]: Dictionary mapping file names to documentation paths
+3299:     """
+3300:     if output_dir is None:
+3301:         output_dir = self.reports_dir / "code_documentation"
+3302:     else:
+3303:         output_dir = Path(output_dir)
+3304:     
+3305:     output_dir.mkdir(parents=True, exist_ok=True)
+3306:     
+3307:     self.logger.info(f"Exporting code documentation from {source_dir} to {output_dir}")
+3308:     
+3309:     documented_files = {}
+3310:     source_path = Path(source_dir)
+3311:     
+3312:     if not source_path.exists():
+3313:         self.logger.warning(f"Source directory {source_dir} does not exist")
+3314:         return documented_files
+3315:     
+3316:     try:
+3317:         # Find all Python files
+3318:         python_files = list(source_path.glob("*.py"))
+3319:         
+3320:         for py_file in python_files:
+3321:             try:
+3322:                 # Read source code
+3323:                 with open(py_file, 'r', encoding='utf-8') as f:
+3324:                     code_content = f.read()
+3325:                 
+3326:                 # Create formatted documentation
+3327:                 doc_content = self._format_code_documentation(py_file.name, code_content)
+3328:                 
+3329:                 # Save documentation
+3330:                 doc_filename = f"{py_file.stem}_documentation.txt"
+3331:                 doc_path = output_dir / doc_filename
+3332:                 
+3333:                 with open(doc_path, 'w', encoding='utf-8') as f:
+3334:                     f.write(doc_content)
+3335:                 
+3336:                 documented_files[py_file.name] = str(doc_path)
+3337:                 self.logger.info(f"Documented {py_file.name}")
+3338:                 
+3339:             except Exception as e:
+3340:                 self.logger.warning(f"Could not document {py_file}: {e}")
+3341:         
+3342:         # Create summary documentation
+3343:         summary_path = self._create_code_summary(documented_files, output_dir)
+3344:         if summary_path:
+3345:             documented_files['_summary'] = summary_path
+3346:         
+3347:         # Create process flow documentation
+3348:         process_path = self._create_process_documentation(output_dir)
+3349:         if process_path:
+3350:             documented_files['_process_flow'] = process_path
+3351:         
+3352:         self.logger.info(f"Code documentation completed. {len(documented_files)} files documented.")
+3353:         return documented_files
+3354:         
+3355:     except Exception as e:
+3356:         self.logger.error(f"Error exporting code documentation: {e}")
+3357:         raise
+3358: 
+3359: def _format_code_documentation(self, filename: str, code_content: str) -> str:
+3360:     """Format code content for documentation."""
+3361:     lines = code_content.split('\n')
+3362:     
+3363:     doc_lines = [
+3364:         "=" * 80,
+3365:         f"DOCUMENTACIÓN DE CÓDIGO: {filename}",
+3366:         "=" * 80,
+3367:         f"Fecha de generación: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}",
+3368:         f"Número de líneas: {len(lines)}",
+3369:         "",
+3370:         "CONTENIDO DEL ARCHIVO:",
+3371:         "-" * 40,
+3372:         ""
+3373:     ]
+3374:     
+3375:     # Add line numbers and content
+3376:     for i, line in enumerate(lines, 1):
+3377:         doc_lines.append(f"{i:4d}: {line}")
+3378:     
+3379:     doc_lines.extend([
+3380:         "",
+3381:         "-" * 40,
+3382:         "FIN DEL ARCHIVO",
+3383:         "=" * 80
+3384:     ])
+3385:     
+3386:     return '\n'.join(doc_lines)
+3387: 
+3388: def _create_code_summary(self, documented_files: Dict[str, str], output_dir: Path) -> Optional[str]:
+3389:     """Create a summary of all documented code files."""
+3390:     try:
+3391:         summary_content = [
+3392:             "=" * 80,
+3393:             "RESUMEN DE DOCUMENTACIÓN DE CÓDIGO",
+3394:             "=" * 80,
+3395:             f"Fecha de generación: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}",
+3396:             f"Total de archivos documentados: {len([f for f in documented_files.keys() if not f.startswith('_')])}",
+3397:             "",
+3398:             "ARCHIVOS DOCUMENTADOS:",
+3399:             "-" * 40
+3400:         ]
+3401:         
+3402:         for filename, doc_path in documented_files.items():
+3403:             if not filename.startswith('_'):
+3404:                 summary_content.append(f"• {filename} -> {Path(doc_path).name}")
+3405:         
+3406:         summary_content.extend([
+3407:             "",
+3408:             "ESTRUCTURA DEL SISTEMA:",
+3409:             "-" * 40,
+3410:             "• ine_extractor.py: Descarga de datos del INE",
+3411:             "• data_cleaner.py: Limpieza y procesamiento de datos",
+3412:             "• feature_engineering.py: Ingeniería de características",
+3413:             "• model_trainer.py: Entrenamiento de modelos de IA",
+3414:             "• predictor.py: Generación de predicciones",
+3415:             "• report_generator.py: Generación de informes y visualizaciones",
+3416:             "",
+3417:             "FLUJO DE PROCESAMIENTO:",
+3418:             "-" * 40,
+3419:             "1. Extracción de datos (INE) -> datos brutos",
+3420:             "2. Limpieza de datos -> datos procesados",
+3421:             "3. Ingeniería de características -> características para ML",
+3422:             "4. Entrenamiento de modelos -> modelos entrenados",
+3423:             "5. Generación de predicciones -> predicciones futuras",
+3424:             "6. Generación de informes -> análisis y visualizaciones",
+3425:             "",
+3426:             "=" * 80
+3427:         ])
+3428:         
+3429:         summary_path = output_dir / "resumen_documentacion.txt"
+3430:         with open(summary_path, 'w', encoding='utf-8') as f:
+3431:             f.write('\n'.join(summary_content))
+3432:         
+3433:         return str(summary_path)
+3434:         
+3435:     except Exception as e:
+3436:         self.logger.warning(f"Could not create code summary: {e}")
+3437:         return None
+3438: 
+3439: def _create_process_documentation(self, output_dir: Path) -> Optional[str]:
+3440:     """Create process flow documentation."""
+3441:     try:
+3442:         process_content = [
+3443:             "=" * 80,
+3444:             "DOCUMENTACIÓN DEL PROCESO DE PREDICCIÓN DE INFLACIÓN",
+3445:             "=" * 80,
+3446:             f"Fecha de generación: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}",
+3447:             "",
+3448:             "DESCRIPCIÓN GENERAL:",
+3449:             "-" * 40,
+3450:             "Sistema automatizado para la predicción de la tasa de inflación en España",
+3451:             "utilizando datos del Instituto Nacional de Estadística (INE) y modelos de",
+3452:             "inteligencia artificial (ARIMA, Random Forest, LSTM).",
+3453:             "",
+3454:             "COMPONENTES PRINCIPALES:",
+3455:             "-" * 40,
+3456:             "",
+3457:             "1. EXTRACTOR DE DATOS INE (ine_extractor.py)",
+3458:             "   • Conecta con la API del INE",
+3459:             "   • Descarga datos de IPC general, por grupos e IPCA",
+3460:             "   • Maneja errores de conexión con reintentos",
+3461:             "   • Guarda datos en formato CSV",
+3462:             "",
+3463:             "2. PROCESADOR DE DATOS (data_cleaner.py)",
+3464:             "   • Carga datos brutos desde CSV",
+3465:             "   • Detecta y corrige valores faltantes",
+3466:             "   • Identifica y trata outliers estadísticos",
+3467:             "   • Normaliza fechas y calcula tasas de inflación",
+3468:             "",
+3469:             "3. INGENIERO DE CARACTERÍSTICAS (feature_engineering.py)",
+3470:             "   • Crea características lag (1, 3, 6, 12 meses)",
+3471:             "   • Genera medias móviles y componentes estacionales",
+3472:             "   • Prepara datos para modelos de machine learning",
+3473:             "",
+3474:             "4. ENTRENADOR DE MODELOS (model_trainer.py)",
+3475:             "   • Implementa modelos ARIMA, Random Forest y LSTM",
+3476:             "   • Divide datos en entrenamiento y validación",
+3477:             "   • Evalúa modelos con métricas MAE, RMSE, MAPE",
+3478:             "   • Selecciona el mejor modelo automáticamente",
+3479:             "",
+3480:             "5. PREDICTOR (predictor.py)",
+3481:             "   • Carga el mejor modelo entrenado",
+3482:             "   • Genera predicciones para 12 meses",
+3483:             "   • Calcula intervalos de confianza",
+3484:             "   • Valida y exporta predicciones",
+3485:             "",
+3486:             "6. GENERADOR DE INFORMES (report_generator.py)",
+3487:             "   • Crea visualizaciones con matplotlib/seaborn",
+3488:             "   • Genera análisis económico interpretativo",
+3489:             "   • Produce informes técnicos en PDF",
+3490:             "   • Documenta código fuente del proceso",
+3491:             "",
+3492:             "FLUJO DE EJECUCIÓN:",
+3493:             "-" * 40,
+3494:             "",
+3495:             "Paso 1: Descarga de Datos",
+3496:             "├── Conectar con API del INE",
+3497:             "├── Descargar IPC general (serie principal)",
+3498:             "├── Descargar IPC por grupos (sectorial)",
+3499:             "├── Descargar IPCA (armonizado europeo)",
+3500:             "└── Guardar en data/raw/",
+3501:             "",
+3502:             "Paso 2: Procesamiento de Datos",
+3503:             "├── Cargar datos brutos",
+3504:             "├── Limpiar valores faltantes (interpolación)",
+3505:             "├── Detectar outliers (IQR, Z-score)",
+3506:             "├── Calcular tasas de inflación",
+3507:             "└── Guardar en data/processed/",
+3508:             "",
+3509:             "Paso 3: Ingeniería de Características",
+3510:             "├── Crear características lag",
+3511:             "├── Generar medias móviles",
+3512:             "├── Añadir componentes estacionales",
+3513:             "└── Preparar datasets para ML",
+3514:             "",
+3515:             "Paso 4: Entrenamiento de Modelos",
+3516:             "├── Dividir datos (80% entrenamiento, 20% validación)",
+3517:             "├── Entrenar ARIMA (series temporales)",
+3518:             "├── Entrenar Random Forest (no lineal)",
+3519:             "├── Entrenar LSTM (redes neuronales)",
+3520:             "├── Evaluar con métricas de error",
+3521:             "└── Seleccionar mejor modelo",
+3522:             "",
+3523:             "Paso 5: Generación de Predicciones",
+3524:             "├── Cargar mejor modelo",
+3525:             "├── Generar predicciones 12 meses",
+3526:             "├── Calcular intervalos de confianza",
+3527:             "└── Exportar resultados",
+3528:             "",
+3529:             "Paso 6: Generación de Informes",
+3530:             "├── Crear visualizaciones (6 tipos de gráficos)",
+3531:             "├── Generar análisis económico interpretativo",
+3532:             "├── Producir informe técnico PDF",
+3533:             "└── Documentar proceso y código",
+3534:             "",
+3535:             "MÉTRICAS DE EVALUACIÓN:",
+3536:             "-" * 40,
+3537:             "• MAE (Mean Absolute Error): Error absoluto promedio",
+3538:             "• RMSE (Root Mean Square Error): Raíz del error cuadrático medio",
+3539:             "• MAPE (Mean Absolute Percentage Error): Error porcentual absoluto medio",
+3540:             "",
+3541:             "OUTPUTS GENERADOS:",
+3542:             "-" * 40,
+3543:             "• data/processed/: Datos limpios y procesados",
+3544:             "• models/: Modelos entrenados guardados",
+3545:             "• reports/: Visualizaciones, análisis y documentación",
+3546:             "• reports/informe_tecnico_*.pdf: Informe técnico completo",
+3547:             "",
+3548:             "CONFIGURACIÓN:",
+3549:             "-" * 40,
+3550:             "• config/config.yaml: Parámetros del sistema",
+3551:             "• requirements.txt: Dependencias de Python",
+3552:             "",
+3553:             "=" * 80
+3554:         ]
+3555:         
+3556:         process_path = output_dir / "documentacion_proceso.txt"
+3557:         with open(process_path, 'w', encoding='utf-8') as f:
+3558:             f.write('\n'.join(process_content))
+3559:         
+3560:         return str(process_path)
+3561:         
+3562:     except Exception as e:
+3563:         self.logger.warning(f"Could not create process documentation: {e}")
+3564:         return None
+3565: 
+
+----------------------------------------
+FIN DEL ARCHIVO
+================================================================================

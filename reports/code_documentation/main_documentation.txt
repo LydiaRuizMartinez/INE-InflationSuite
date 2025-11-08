@@ -1,0 +1,1289 @@
+================================================================================
+DOCUMENTACIÓN DE CÓDIGO: main.py
+================================================================================
+Fecha de generación: 08/11/2025 17:51:34
+Número de líneas: 1276
+
+CONTENIDO DEL ARCHIVO:
+----------------------------------------
+
+   1: """
+   2: Main pipeline orchestrator for Spanish inflation prediction system.
+   3: Coordinates sequential execution of all modules with error handling and logging.
+   4: """
+   5: 
+   6: import os
+   7: import sys
+   8: import logging
+   9: import time
+  10: import traceback
+  11: import psutil
+  12: import gc
+  13: import threading
+  14: import numpy as np
+  15: from datetime import datetime
+  16: from pathlib import Path
+  17: from typing import Dict, Any, Optional, Callable
+  18: import yaml
+  19: import json
+  20: import warnings
+  21: warnings.filterwarnings('ignore')
+  22: 
+  23: # Import all modules
+  24: from ine_extractor import INEExtractor
+  25: from data_cleaner import DataProcessor
+  26: from feature_engineering import FeatureEngineer
+  27: from model_trainer import ModelTrainer
+  28: from predictor import Predictor
+  29: from report_generator import ReportGenerator
+  30: 
+  31: 
+  32: class InflationPredictionPipeline:
+  33:     """
+  34:     Main pipeline orchestrator for inflation prediction system.
+  35:     
+  36:     Coordinates the sequential execution of all modules:
+  37:     1. Data extraction from INE
+  38:     2. Data cleaning and processing
+  39:     3. Feature engineering
+  40:     4. Model training and evaluation
+  41:     5. Prediction generation
+  42:     6. Report generation
+  43:     """
+  44:     
+  45:     def __init__(self, config_path: str = "config/config.yaml"):
+  46:         """
+  47:         Initialize the pipeline with configuration.
+  48:         
+  49:         Args:
+  50:             config_path (str): Path to configuration file
+  51:         """
+  52:         self.config_path = config_path
+  53:         self.config = self._load_config()
+  54:         self.logger = self._setup_logging()
+  55:         
+  56:         # Pipeline state tracking
+  57:         self.pipeline_state = {
+  58:             'start_time': None,
+  59:             'end_time': None,
+  60:             'duration': None,
+  61:             'status': 'not_started',
+  62:             'current_step': None,
+  63:             'completed_steps': [],
+  64:             'failed_steps': [],
+  65:             'results': {}
+  66:         }
+  67:         
+  68:         # Performance monitoring
+  69:         self.performance_metrics = {
+  70:             'memory_usage': {},
+  71:             'execution_times': {},
+  72:             'cpu_usage': {},
+  73:             'memory_optimization': {},
+  74:             'system_resources': {}
+  75:         }
+  76:         
+  77:         # Monitoring thread
+  78:         self.monitoring_active = False
+  79:         self.monitoring_thread = None
+  80:         self.resource_history = []
+  81:         
+  82:         # Initialize modules
+  83:         self.modules = {}
+  84:         
+  85:     def _load_config(self) -> Dict[str, Any]:
+  86:         """Load configuration from YAML file."""
+  87:         try:
+  88:             with open(self.config_path, 'r', encoding='utf-8') as file:
+  89:                 config = yaml.safe_load(file)
+  90:                 return config
+  91:         except FileNotFoundError:
+  92:             print(f"Configuration file not found: {self.config_path}")
+  93:             sys.exit(1)
+  94:         except yaml.YAMLError as e:
+  95:             print(f"Error parsing configuration file: {e}")
+  96:             sys.exit(1)
+  97:     
+  98:     def _setup_logging(self) -> logging.Logger:
+  99:         """Setup logging configuration."""
+ 100:         # Base logs directory from config (may be relative)
+ 101:         logs_dir = Path(self.config.get('paths', {}).get('logs', 'logs/'))
+ 102:         # Ensure the logs directory exists; final log file parent will be created below
+ 103:         logs_dir.mkdir(parents=True, exist_ok=True)
+ 104: 
+ 105:         # Configure logging
+ 106:         log_level = getattr(logging, self.config.get('logging', {}).get('level', 'INFO'))
+ 107:         log_format = self.config.get('logging', {}).get('format', 
+ 108:                                    '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+ 109: 
+ 110:         # Resolve log file path robustly to avoid doubling directories (e.g. 'logs/logs/...')
+ 111:         log_file_setting = self.config.get('logging', {}).get('file', 'inflation_prediction.log')
+ 112:         log_file_path = Path(log_file_setting)
+ 113: 
+ 114:         if log_file_path.is_absolute():
+ 115:             # Absolute path provided in config
+ 116:             log_file = log_file_path
+ 117:         else:
+ 118:             # If the configured path already starts with the logs dir name (e.g. 'logs/...'),
+ 119:             # use it as-is (relative to project root). Otherwise join logs_dir with the basename
+ 120:             # to avoid creating paths like 'logs/logs/inflation_prediction.log'.
+ 121:             if log_file_path.parts and log_file_path.parts[0] == logs_dir.name:
+ 122:                 log_file = log_file_path
+ 123:             elif log_file_path.parent != Path('.'):
+ 124:                 # e.g. 'some/subdir/name.log' -> place only the file name inside logs_dir
+ 125:                 log_file = logs_dir / log_file_path.name
+ 126:             else:
+ 127:                 log_file = logs_dir / log_file_path
+ 128: 
+ 129:         # Ensure parent directory for the resolved log file exists
+ 130:         log_file.parent.mkdir(parents=True, exist_ok=True)
+ 131:         
+ 132:         # Setup logger
+ 133:         logger = logging.getLogger('InflationPipeline')
+ 134:         logger.setLevel(log_level)
+ 135:         
+ 136:         # Remove existing handlers
+ 137:         for handler in logger.handlers[:]:
+ 138:             logger.removeHandler(handler)
+ 139:         
+ 140:         # File handler
+ 141:         file_handler = logging.FileHandler(log_file, encoding='utf-8')
+ 142:         file_handler.setLevel(log_level)
+ 143:         file_formatter = logging.Formatter(log_format)
+ 144:         file_handler.setFormatter(file_formatter)
+ 145:         logger.addHandler(file_handler)
+ 146:         
+ 147:         # Console handler
+ 148:         console_handler = logging.StreamHandler()
+ 149:         console_handler.setLevel(log_level)
+ 150:         console_formatter = logging.Formatter('%(levelname)s - %(message)s')
+ 151:         console_handler.setFormatter(console_formatter)
+ 152:         logger.addHandler(console_handler)
+ 153:         
+ 154:         return logger
+ 155:     
+ 156:     def _validate_configuration(self) -> bool:
+ 157:         """Validate configuration parameters."""
+ 158:         self.logger.info("Validating configuration...")
+ 159:         
+ 160:         required_sections = ['data', 'models', 'paths']
+ 161:         for section in required_sections:
+ 162:             if section not in self.config:
+ 163:                 self.logger.error(f"Missing required configuration section: {section}")
+ 164:                 return False
+ 165:         
+ 166:         # Validate data configuration
+ 167:         data_config = self.config.get('data', {})
+ 168:         required_data_keys = ['start_date', 'end_date', 'urls']
+ 169:         for key in required_data_keys:
+ 170:             if key not in data_config:
+ 171:                 self.logger.error(f"Missing required data configuration: {key}")
+ 172:                 return False
+ 173:         
+ 174:         # Validate paths
+ 175:         paths_config = self.config.get('paths', {})
+ 176:         required_paths = ['data', 'models', 'reports']
+ 177:         for path_key in required_paths:
+ 178:             if path_key not in paths_config:
+ 179:                 self.logger.error(f"Missing required path configuration: {path_key}")
+ 180:                 return False
+ 181:         
+ 182:         # Create directories
+ 183:         for path_key, path_config in paths_config.items():
+ 184:             if isinstance(path_config, dict):
+ 185:                 for subpath in path_config.values():
+ 186:                     Path(subpath).mkdir(parents=True, exist_ok=True)
+ 187:             else:
+ 188:                 Path(path_config).mkdir(parents=True, exist_ok=True)
+ 189:         
+ 190:         self.logger.info("Configuration validation completed successfully")
+ 191:         return True
+ 192:     
+ 193:     def _initialize_modules(self) -> None:
+ 194:         """Initialize all pipeline modules."""
+ 195:         self.logger.info("Initializing pipeline modules...")
+ 196:         
+ 197:         try:
+ 198:             self.modules = {
+ 199:                 'extractor': INEExtractor(self.config_path),
+ 200:                 'processor': DataProcessor(),
+ 201:                 'feature_engineer': FeatureEngineer(self.config_path),
+ 202:                 'model_trainer': ModelTrainer(self.config_path),
+ 203:                 'predictor': Predictor(self.config_path),
+ 204:                 'report_generator': ReportGenerator(self.config_path)
+ 205:             }
+ 206:             self.logger.info("All modules initialized successfully")
+ 207:         except Exception as e:
+ 208:             self.logger.error(f"Error initializing modules: {e}")
+ 209:             raise
+ 210:     
+ 211:     def _start_resource_monitoring(self) -> None:
+ 212:         """Start background resource monitoring."""
+ 213:         self.monitoring_active = True
+ 214:         self.monitoring_thread = threading.Thread(target=self._monitor_resources_background)
+ 215:         self.monitoring_thread.daemon = True
+ 216:         self.monitoring_thread.start()
+ 217:         self.logger.debug("Background resource monitoring started")
+ 218:     
+ 219:     def _stop_resource_monitoring(self) -> None:
+ 220:         """Stop background resource monitoring."""
+ 221:         self.monitoring_active = False
+ 222:         if self.monitoring_thread and self.monitoring_thread.is_alive():
+ 223:             self.monitoring_thread.join(timeout=1.0)
+ 224:         self.logger.debug("Background resource monitoring stopped")
+ 225:     
+ 226:     def _monitor_resources_background(self) -> None:
+ 227:         """Background thread for continuous resource monitoring."""
+ 228:         while self.monitoring_active:
+ 229:             try:
+ 230:                 process = psutil.Process()
+ 231:                 
+ 232:                 # System resources
+ 233:                 system_memory = psutil.virtual_memory()
+ 234:                 system_cpu = psutil.cpu_percent(interval=1)
+ 235:                 
+ 236:                 # Process resources
+ 237:                 memory_info = process.memory_info()
+ 238:                 process_memory_mb = memory_info.rss / 1024 / 1024
+ 239:                 process_cpu = process.cpu_percent()
+ 240:                 
+ 241:                 # Store resource snapshot
+ 242:                 resource_snapshot = {
+ 243:                     'timestamp': time.time(),
+ 244:                     'system_memory_percent': system_memory.percent,
+ 245:                     'system_memory_available_gb': system_memory.available / 1024 / 1024 / 1024,
+ 246:                     'system_cpu_percent': system_cpu,
+ 247:                     'process_memory_mb': process_memory_mb,
+ 248:                     'process_cpu_percent': process_cpu
+ 249:                 }
+ 250:                 
+ 251:                 self.resource_history.append(resource_snapshot)
+ 252:                 
+ 253:                 # Keep only last 100 snapshots to prevent memory buildup
+ 254:                 if len(self.resource_history) > 100:
+ 255:                     self.resource_history = self.resource_history[-100:]
+ 256:                 
+ 257:                 # Check for resource warnings
+ 258:                 self._check_resource_warnings(resource_snapshot)
+ 259:                 
+ 260:                 time.sleep(5)  # Monitor every 5 seconds
+ 261:                 
+ 262:             except Exception as e:
+ 263:                 self.logger.debug(f"Resource monitoring error: {e}")
+ 264:                 time.sleep(5)
+ 265:     
+ 266:     def _check_resource_warnings(self, snapshot: Dict[str, Any]) -> None:
+ 267:         """Check for resource usage warnings."""
+ 268:         # Memory warnings
+ 269:         if snapshot['system_memory_percent'] > 90:
+ 270:             self.logger.warning(f"High system memory usage: {snapshot['system_memory_percent']:.1f}%")
+ 271:         
+ 272:         if snapshot['process_memory_mb'] > 2048:  # 2GB
+ 273:             self.logger.warning(f"High process memory usage: {snapshot['process_memory_mb']:.1f}MB")
+ 274:         
+ 275:         # CPU warnings
+ 276:         if snapshot['system_cpu_percent'] > 90:
+ 277:             self.logger.warning(f"High system CPU usage: {snapshot['system_cpu_percent']:.1f}%")
+ 278:     
+ 279:     def _optimize_memory_usage(self, step_name: str) -> Dict[str, Any]:
+ 280:         """Optimize memory usage after each step."""
+ 281:         # Get memory before optimization
+ 282:         process = psutil.Process()
+ 283:         memory_before = process.memory_info().rss / 1024 / 1024
+ 284:         
+ 285:         # Force garbage collection
+ 286:         collected = gc.collect()
+ 287:         
+ 288:         # Get memory after optimization
+ 289:         memory_after = process.memory_info().rss / 1024 / 1024
+ 290:         memory_freed = memory_before - memory_after
+ 291:         
+ 292:         optimization_result = {
+ 293:             'memory_before_mb': memory_before,
+ 294:             'memory_after_mb': memory_after,
+ 295:             'memory_freed_mb': memory_freed,
+ 296:             'objects_collected': collected
+ 297:         }
+ 298:         
+ 299:         self.performance_metrics['memory_optimization'][step_name] = optimization_result
+ 300:         
+ 301:         if memory_freed > 10:  # Only log if significant memory was freed
+ 302:             self.logger.info(f"Memory optimization for '{step_name}': "
+ 303:                            f"freed {memory_freed:.1f}MB, collected {collected} objects")
+ 304:         
+ 305:         return optimization_result
+ 306:     
+ 307:     def _monitor_performance(self, step_name: str, start_time: float) -> None:
+ 308:         """Monitor performance metrics for a pipeline step."""
+ 309:         end_time = time.time()
+ 310:         execution_time = end_time - start_time
+ 311:         
+ 312:         # Memory usage
+ 313:         process = psutil.Process()
+ 314:         memory_info = process.memory_info()
+ 315:         memory_mb = memory_info.rss / 1024 / 1024
+ 316:         
+ 317:         # CPU usage
+ 318:         cpu_percent = process.cpu_percent()
+ 319:         
+ 320:         # System resources
+ 321:         system_memory = psutil.virtual_memory()
+ 322:         system_cpu = psutil.cpu_percent()
+ 323:         
+ 324:         # Store metrics
+ 325:         self.performance_metrics['execution_times'][step_name] = execution_time
+ 326:         self.performance_metrics['memory_usage'][step_name] = memory_mb
+ 327:         self.performance_metrics['cpu_usage'][step_name] = cpu_percent
+ 328:         self.performance_metrics['system_resources'][step_name] = {
+ 329:             'system_memory_percent': system_memory.percent,
+ 330:             'system_cpu_percent': system_cpu,
+ 331:             'available_memory_gb': system_memory.available / 1024 / 1024 / 1024
+ 332:         }
+ 333:         
+ 334:         # Optimize memory after step completion
+ 335:         self._optimize_memory_usage(step_name)
+ 336:         
+ 337:         self.logger.info(f"Step '{step_name}' completed in {execution_time:.2f}s, "
+ 338:                         f"Memory: {memory_mb:.1f}MB, CPU: {cpu_percent:.1f}%, "
+ 339:                         f"System Memory: {system_memory.percent:.1f}%")
+ 340:     
+ 341:     def _update_pipeline_state(self, step_name: str, status: str, result: Any = None) -> None:
+ 342:         """Update pipeline state tracking."""
+ 343:         self.pipeline_state['current_step'] = step_name
+ 344:         
+ 345:         if status == 'completed':
+ 346:             self.pipeline_state['completed_steps'].append(step_name)
+ 347:             if result is not None:
+ 348:                 self.pipeline_state['results'][step_name] = result
+ 349:         elif status == 'failed':
+ 350:             self.pipeline_state['failed_steps'].append(step_name)
+ 351:             self.pipeline_state['status'] = 'failed'
+ 352:     
+ 353:     def _handle_step_error(self, step_name: str, error: Exception) -> bool:
+ 354:         """
+ 355:         Handle errors in pipeline steps.
+ 356:         
+ 357:         Args:
+ 358:             step_name (str): Name of the failed step
+ 359:             error (Exception): The exception that occurred
+ 360:             
+ 361:         Returns:
+ 362:             bool: True if pipeline should continue, False if it should stop
+ 363:         """
+ 364:         self.logger.error(f"Error in step '{step_name}': {str(error)}")
+ 365:         self.logger.error(f"Traceback: {traceback.format_exc()}")
+ 366:         
+ 367:         self._update_pipeline_state(step_name, 'failed')
+ 368:         
+ 369:         # Define critical steps that should stop the pipeline
+ 370:         critical_steps = ['data_extraction', 'data_processing']
+ 371:         
+ 372:         if step_name in critical_steps:
+ 373:             self.logger.error(f"Critical step '{step_name}' failed. Stopping pipeline.")
+ 374:             return False
+ 375:         else:
+ 376:             self.logger.warning(f"Non-critical step '{step_name}' failed. Continuing pipeline.")
+ 377:             return True
+ 378:     
+ 379:     def step_1_data_extraction(self) -> Dict[str, Any]:
+ 380:         """Step 1: Extract data from INE API."""
+ 381:         step_name = "data_extraction"
+ 382:         self.logger.info(f"Starting {step_name}...")
+ 383:         start_time = time.time()
+ 384:         
+ 385:         try:
+ 386:             extractor = self.modules['extractor']
+ 387:             
+ 388:             # Get date range from config
+ 389:             start_date = self.config['data']['start_date']
+ 390:             end_date = self.config['data']['end_date']
+ 391:             
+ 392:             # Test connections first
+ 393:             self.logger.info("Testing INE API connections...")
+ 394:             connection_results = extractor.test_all_connections()
+ 395:             
+ 396:             if not any(connection_results.values()):
+ 397:                 raise Exception("All INE API connections failed")
+ 398:             
+ 399:             # Download all data types
+ 400:             self.logger.info(f"Downloading INE data from {start_date} to {end_date}...")
+ 401:             exported_files = extractor.export_all_data(start_date, end_date)
+ 402:             
+ 403:             result = {
+ 404:                 'status': 'success',
+ 405:                 'exported_files': exported_files,
+ 406:                 'connection_results': connection_results,
+ 407:                 'date_range': {'start': start_date, 'end': end_date}
+ 408:             }
+ 409:             
+ 410:             self._monitor_performance(step_name, start_time)
+ 411:             self._update_pipeline_state(step_name, 'completed', result)
+ 412:             
+ 413:             self.logger.info(f"Data extraction completed successfully")
+ 414:             return result
+ 415:             
+ 416:         except Exception as e:
+ 417:             self._handle_step_error(step_name, e)
+ 418:             raise
+ 419:     
+ 420:     def step_2_data_processing(self) -> Dict[str, Any]:
+ 421:         """Step 2: Clean and process the downloaded data."""
+ 422:         step_name = "data_processing"
+ 423:         self.logger.info(f"Starting {step_name}...")
+ 424:         start_time = time.time()
+ 425:         
+ 426:         try:
+ 427:             processor = self.modules['processor']
+ 428:             
+ 429:             # Get raw data files from previous step
+ 430:             extraction_result = self.pipeline_state['results'].get('data_extraction', {})
+ 431:             exported_files = extraction_result.get('exported_files', {})
+ 432:             
+ 433:             if not exported_files:
+ 434:                 raise Exception("No data files available from extraction step")
+ 435:             
+ 436:             processed_data = {}
+ 437:             
+ 438:             # Process each data type
+ 439:             for data_type, file_path in exported_files.items():
+ 440:                 self.logger.info(f"Processing {data_type} data from {file_path}")
+ 441:                 
+ 442:                 # Load raw data
+ 443:                 raw_data = processor.load_raw_data(file_path)
+ 444:                 
+ 445:                 # Clean and process
+ 446:                 cleaned_data = processor.handle_missing_values(raw_data)
+ 447:                 cleaned_data = processor.normalize_dates(cleaned_data)
+ 448:                 cleaned_data = processor.calculate_inflation_rates(cleaned_data)
+ 449:                 
+ 450:                 # Detect outliers (but don't remove them automatically)
+ 451:                 outliers = processor.detect_outliers(cleaned_data)
+ 452:                 
+ 453:                 # Generate statistics
+ 454:                 statistics = processor.generate_statistics(cleaned_data)
+ 455:                 
+ 456:                 # Save processed data
+ 457:                 processed_dir = Path(self.config['paths']['data']['processed'])
+ 458:                 processed_file = processed_dir / f"processed_{data_type}.csv"
+ 459:                 cleaned_data.to_csv(processed_file, index=False, encoding='utf-8')
+ 460:                 
+ 461:                 processed_data[data_type] = {
+ 462:                     'data': cleaned_data,
+ 463:                     'file_path': str(processed_file),
+ 464:                     'outliers': outliers,
+ 465:                     'statistics': statistics
+ 466:                 }
+ 467:             
+ 468:             result = {
+ 469:                 'status': 'success',
+ 470:                 'processed_data': processed_data,
+ 471:                 'total_files_processed': len(processed_data)
+ 472:             }
+ 473:             
+ 474:             self._monitor_performance(step_name, start_time)
+ 475:             self._update_pipeline_state(step_name, 'completed', result)
+ 476:             
+ 477:             self.logger.info(f"Data processing completed successfully")
+ 478:             return result
+ 479:             
+ 480:         except Exception as e:
+ 481:             self._handle_step_error(step_name, e)
+ 482:             raise
+ 483:     
+ 484:     def step_3_feature_engineering(self) -> Dict[str, Any]:
+ 485:         """Step 3: Create features for machine learning models."""
+ 486:         step_name = "feature_engineering"
+ 487:         self.logger.info(f"Starting {step_name}...")
+ 488:         start_time = time.time()
+ 489:         
+ 490:         try:
+ 491:             feature_engineer = self.modules['feature_engineer']
+ 492:             
+ 493:             # Get processed data from previous step
+ 494:             processing_result = self.pipeline_state['results'].get('data_processing', {})
+ 495:             processed_data = processing_result.get('processed_data', {})
+ 496:             
+ 497:             if not processed_data:
+ 498:                 raise Exception("No processed data available from processing step")
+ 499:             
+ 500:             # Use IPC general data for feature engineering
+ 501:             ipc_general_data = processed_data.get('ipc_general', {}).get('data')
+ 502:             if ipc_general_data is None:
+ 503:                 raise Exception("IPC general data not found")
+ 504:             
+ 505:             self.logger.info("Creating lag features...")
+ 506:             data_with_lags = feature_engineer.create_lag_features(ipc_general_data)
+ 507:             
+ 508:             self.logger.info("Creating rolling features...")
+ 509:             data_with_rolling = feature_engineer.create_rolling_features(data_with_lags)
+ 510:             
+ 511:             self.logger.info("Creating seasonal features...")
+ 512:             data_with_seasonal = feature_engineer.create_seasonal_features(data_with_rolling)
+ 513:             
+ 514:             self.logger.info("Creating economic indicators...")
+ 515:             final_features = feature_engineer.create_economic_indicators(data_with_seasonal)
+ 516:             
+ 517:             # Generate feature summary
+ 518:             feature_summary = feature_engineer.get_feature_summary(final_features)
+ 519:             
+ 520:             # Save engineered features
+ 521:             features_dir = Path(self.config['paths']['data']['processed'])
+ 522:             features_file = features_dir / "engineered_features.csv"
+ 523:             final_features.to_csv(features_file, index=False, encoding='utf-8')
+ 524:             
+ 525:             result = {
+ 526:                 'status': 'success',
+ 527:                 'engineered_data': final_features,
+ 528:                 'features_file': str(features_file),
+ 529:                 'feature_summary': feature_summary
+ 530:             }
+ 531:             
+ 532:             self._monitor_performance(step_name, start_time)
+ 533:             self._update_pipeline_state(step_name, 'completed', result)
+ 534:             
+ 535:             self.logger.info(f"Feature engineering completed successfully")
+ 536:             return result
+ 537:             
+ 538:         except Exception as e:
+ 539:             self._handle_step_error(step_name, e)
+ 540:             raise
+ 541:     
+ 542:     def step_4_model_training(self) -> Dict[str, Any]:
+ 543:         """Step 4: Train and evaluate machine learning models."""
+ 544:         step_name = "model_training"
+ 545:         self.logger.info(f"Starting {step_name}...")
+ 546:         start_time = time.time()
+ 547:         
+ 548:         try:
+ 549:             model_trainer = self.modules['model_trainer']
+ 550:             
+ 551:             # Get engineered features from previous step
+ 552:             feature_result = self.pipeline_state['results'].get('feature_engineering', {})
+ 553:             engineered_data = feature_result.get('engineered_data')
+ 554:             
+ 555:             if engineered_data is None:
+ 556:                 raise Exception("No engineered features available from feature engineering step")
+ 557:             
+ 558:             trained_models = {}
+ 559:             
+ 560:             # Train ARIMA model
+ 561:             self.logger.info("Training ARIMA model...")
+ 562:             try:
+ 563:                 arima_result = model_trainer.train_arima(engineered_data)
+ 564:                 trained_models['arima'] = arima_result
+ 565:             except Exception as e:
+ 566:                 self.logger.warning(f"ARIMA training failed: {e}")
+ 567:                 trained_models['arima'] = {'status': 'failed', 'error': str(e)}
+ 568:             
+ 569:             # Prepare data for ML models
+ 570:             # Find target column (inflation rate)
+ 571:             target_columns = [col for col in engineered_data.columns 
+ 572:                             if 'annual_rate' in col.lower() or 'inflacion' in col.lower()]
+ 573:             
+ 574:             if target_columns:
+ 575:                 target_column = target_columns[0]
+ 576:                 
+ 577:                 # Prepare features (exclude target and date columns)
+ 578:                 feature_columns = [col for col in engineered_data.columns 
+ 579:                                  if col != target_column and 'fecha' not in col.lower()]
+ 580:                 
+ 581:                 # Keep only numeric features to avoid strings like 'Definitivo'
+ 582:                 X = engineered_data[feature_columns].select_dtypes(include=[float, int, np.number])
+ 583:                 y = engineered_data[target_column]
+ 584:                 
+ 585:                 # Train Random Forest model
+ 586:                 self.logger.info("Training Random Forest model...")
+ 587:                 try:
+ 588:                     rf_result = model_trainer.train_random_forest(X, y)
+ 589:                     trained_models['random_forest'] = rf_result
+ 590:                 except Exception as e:
+ 591:                     self.logger.warning(f"Random Forest training failed: {e}")
+ 592:                     trained_models['random_forest'] = {'status': 'failed', 'error': str(e)}
+ 593:                 
+ 594:                 # Train LSTM model
+ 595:                 self.logger.info("Training LSTM model...")
+ 596:                 try:
+ 597:                     lstm_result = model_trainer.train_lstm(engineered_data, target_column)
+ 598:                     trained_models['lstm'] = lstm_result
+ 599:                 except Exception as e:
+ 600:                     self.logger.warning(f"LSTM training failed: {e}")
+ 601:                     trained_models['lstm'] = {'status': 'failed', 'error': str(e)}
+ 602:             
+ 603:             # Evaluate all models
+ 604:             self.logger.info("Evaluating models...")
+ 605:             evaluation_results = model_trainer.evaluate_models(trained_models)
+ 606:             
+ 607:             # Select best model
+ 608:             try:
+ 609:                 best_model_info = model_trainer.select_best_model(evaluation_results)
+ 610:             except Exception as e:
+ 611:                 self.logger.warning(f"Best model selection failed: {e}")
+ 612:                 best_model_info = None
+ 613:             
+ 614:             # Save models
+ 615:             self.logger.info("Saving trained models...")
+ 616:             saved_models = model_trainer.save_models(self.config['paths']['models'])
+ 617:             
+ 618:             result = {
+ 619:                 'status': 'success',
+ 620:                 'trained_models': trained_models,
+ 621:                 'evaluation_results': evaluation_results,
+ 622:                 'best_model': best_model_info,
+ 623:                 'saved_models': saved_models
+ 624:             }
+ 625:             
+ 626:             self._monitor_performance(step_name, start_time)
+ 627:             self._update_pipeline_state(step_name, 'completed', result)
+ 628:             
+ 629:             self.logger.info(f"Model training completed successfully")
+ 630:             return result
+ 631:             
+ 632:         except Exception as e:
+ 633:             self._handle_step_error(step_name, e)
+ 634:             raise
+ 635:     
+ 636:     def step_5_prediction_generation(self) -> Dict[str, Any]:
+ 637:         """Step 5: Generate predictions using the best model."""
+ 638:         step_name = "prediction_generation"
+ 639:         self.logger.info(f"Starting {step_name}...")
+ 640:         start_time = time.time()
+ 641:         
+ 642:         try:
+ 643:             predictor = self.modules['predictor']
+ 644:             
+ 645:             # Get model training results
+ 646:             training_result = self.pipeline_state['results'].get('model_training', {})
+ 647:             best_model_info = training_result.get('best_model')
+ 648:             saved_models = training_result.get('saved_models', {})
+ 649:             
+ 650:             if not best_model_info:
+ 651:                 self.logger.warning("No best model identified, using first available model")
+ 652:                 if saved_models:
+ 653:                     model_name = list(saved_models.keys())[0]
+ 654:                     model_path = saved_models[model_name]
+ 655:                 else:
+ 656:                     raise Exception("No trained models available")
+ 657:             else:
+ 658:                 model_name = best_model_info['model_name']
+ 659:                 model_path = saved_models.get(model_name)
+ 660:                 if not model_path:
+ 661:                     raise Exception(f"Model file not found for {model_name}")
+ 662:             
+ 663:             # Load the best model
+ 664:             self.logger.info(f"Loading model: {model_name}")
+ 665:             model_info = predictor.load_best_model(model_path)
+ 666:             
+ 667:             # Get input data for prediction
+ 668:             feature_result = self.pipeline_state['results'].get('feature_engineering', {})
+ 669:             input_data = feature_result.get('engineered_data')
+ 670:             
+ 671:             # Generate predictions
+ 672:             horizon = self.config.get('prediction', {}).get('horizon_months', 12)
+ 673:             self.logger.info(f"Generating {horizon}-month predictions...")
+ 674:             
+ 675:             if model_info['model_type'] == 'ARIMA':
+ 676:                 predictions = predictor.generate_predictions(horizon)
+ 677:             else:
+ 678:                 predictions = predictor.generate_predictions(horizon, input_data)
+ 679:             
+ 680:             # Validate predictions
+ 681:             self.logger.info("Validating predictions...")
+ 682:             validation_results = predictor.validate_predictions(predictions)
+ 683:             
+ 684:             # Export predictions
+ 685:             reports_dir = Path(self.config['paths']['reports'])
+ 686:             
+ 687:             # Export to CSV
+ 688:             csv_path = predictor.export_predictions_csv(
+ 689:                 predictions, 
+ 690:                 str(reports_dir / "predictions.csv")
+ 691:             )
+ 692:             
+ 693:             # Export to JSON
+ 694:             json_path = predictor.export_predictions_json(
+ 695:                 predictions, 
+ 696:                 str(reports_dir / "predictions.json")
+ 697:             )
+ 698:             
+ 699:             # Generate prediction summary
+ 700:             prediction_summary = predictor.get_prediction_summary(predictions)
+ 701:             
+ 702:             result = {
+ 703:                 'status': 'success',
+ 704:                 'predictions': predictions,
+ 705:                 'model_used': model_name,
+ 706:                 'validation_results': validation_results,
+ 707:                 'prediction_summary': prediction_summary,
+ 708:                 'exported_files': {
+ 709:                     'csv': csv_path,
+ 710:                     'json': json_path
+ 711:                 }
+ 712:             }
+ 713:             
+ 714:             self._monitor_performance(step_name, start_time)
+ 715:             self._update_pipeline_state(step_name, 'completed', result)
+ 716:             
+ 717:             self.logger.info(f"Prediction generation completed successfully")
+ 718:             return result
+ 719:             
+ 720:         except Exception as e:
+ 721:             self._handle_step_error(step_name, e)
+ 722:             raise
+ 723:     
+ 724:     def step_6_report_generation(self) -> Dict[str, Any]:
+ 725:         """Step 6: Generate comprehensive reports and visualizations."""
+ 726:         step_name = "report_generation"
+ 727:         self.logger.info(f"Starting {step_name}...")
+ 728:         start_time = time.time()
+ 729:         
+ 730:         try:
+ 731:             report_generator = self.modules['report_generator']
+ 732:             
+ 733:             # Get data from previous steps
+ 734:             processing_result = self.pipeline_state['results'].get('data_processing', {})
+ 735:             prediction_result = self.pipeline_state['results'].get('prediction_generation', {})
+ 736:             training_result = self.pipeline_state['results'].get('model_training', {})
+ 737:             
+ 738:             # Get historical data
+ 739:             processed_data = processing_result.get('processed_data', {})
+ 740:             historical_data = processed_data.get('ipc_general', {}).get('data')
+ 741:             
+ 742:             # Get predictions
+ 743:             predictions = prediction_result.get('predictions')
+ 744:             
+ 745:             # Get model results
+ 746:             evaluation_results = training_result.get('evaluation_results', {})
+ 747:             
+ 748:             if historical_data is None or predictions is None:
+ 749:                 raise Exception("Missing required data for report generation")
+ 750:             
+ 751:             # Create visualizations
+ 752:             self.logger.info("Creating visualizations...")
+ 753:             visualizations = report_generator.create_visualizations(
+ 754:                 historical_data, predictions, evaluation_results
+ 755:             )
+ 756:             
+ 757:             # Generate economic analysis
+ 758:             self.logger.info("Generating economic analysis...")
+ 759:             economic_analysis = report_generator.generate_economic_analysis(
+ 760:                 historical_data, predictions, evaluation_results
+ 761:             )
+ 762:             
+ 763:             # Create technical report
+ 764:             self.logger.info("Creating technical PDF report...")
+ 765:             pdf_report_path = report_generator.create_technical_report(
+ 766:                 economic_analysis, visualizations, evaluation_results
+ 767:             )
+ 768:             
+ 769:             # Export code documentation
+ 770:             self.logger.info("Creating code documentation...")
+ 771:             code_docs = report_generator.export_code_screenshots()
+ 772:             
+ 773:             result = {
+ 774:                 'status': 'success',
+ 775:                 'visualizations': visualizations,
+ 776:                 'economic_analysis': economic_analysis,
+ 777:                 'pdf_report': pdf_report_path,
+ 778:                 'code_documentation': code_docs
+ 779:             }
+ 780:             
+ 781:             self._monitor_performance(step_name, start_time)
+ 782:             self._update_pipeline_state(step_name, 'completed', result)
+ 783:             
+ 784:             self.logger.info(f"Report generation completed successfully")
+ 785:             return result
+ 786:             
+ 787:         except Exception as e:
+ 788:             self._handle_step_error(step_name, e)
+ 789:             raise
+ 790:     
+ 791:     def _estimate_pipeline_duration(self) -> float:
+ 792:         """Estimate total pipeline duration based on system resources."""
+ 793:         # Base estimates in seconds for each step
+ 794:         base_estimates = {
+ 795:             'data_extraction': 60,
+ 796:             'data_processing': 30,
+ 797:             'feature_engineering': 45,
+ 798:             'model_training': 300,  # 5 minutes
+ 799:             'prediction_generation': 15,
+ 800:             'report_generation': 60
+ 801:         }
+ 802:         
+ 803:         # Adjust based on system resources
+ 804:         system_memory = psutil.virtual_memory()
+ 805:         cpu_count = psutil.cpu_count()
+ 806:         
+ 807:         # Memory adjustment factor (less memory = slower)
+ 808:         memory_factor = max(0.5, min(2.0, system_memory.available / (4 * 1024**3)))  # 4GB baseline
+ 809:         
+ 810:         # CPU adjustment factor (fewer cores = slower)
+ 811:         cpu_factor = max(0.5, min(2.0, cpu_count / 4))  # 4 cores baseline
+ 812:         
+ 813:         # Calculate adjusted estimates
+ 814:         total_estimate = 0
+ 815:         for step, base_time in base_estimates.items():
+ 816:             adjusted_time = base_time / (memory_factor * cpu_factor)
+ 817:             total_estimate += adjusted_time
+ 818:         
+ 819:         return total_estimate
+ 820:     
+ 821:     def _create_progress_reporter(self, total_steps: int) -> Callable[[int], None]:
+ 822:         """Create a progress reporting function."""
+ 823:         def report_progress(completed_steps: int):
+ 824:             progress_percent = (completed_steps / total_steps) * 100
+ 825:             elapsed_time = (datetime.now() - self.pipeline_state['start_time']).total_seconds()
+ 826:             
+ 827:             if completed_steps > 0:
+ 828:                 estimated_total_time = elapsed_time * (total_steps / completed_steps)
+ 829:                 remaining_time = estimated_total_time - elapsed_time
+ 830:                 
+ 831:                 self.logger.info(f"Progress: {progress_percent:.1f}% "
+ 832:                                f"({completed_steps}/{total_steps} steps), "
+ 833:                                f"Elapsed: {elapsed_time:.0f}s, "
+ 834:                                f"Estimated remaining: {remaining_time:.0f}s")
+ 835:         
+ 836:         return report_progress
+ 837:     
+ 838:     def run_pipeline(self) -> Dict[str, Any]:
+ 839:         """
+ 840:         Execute the complete inflation prediction pipeline.
+ 841:         
+ 842:         Returns:
+ 843:             Dict[str, Any]: Complete pipeline results and status
+ 844:         """
+ 845:         self.logger.info("=" * 80)
+ 846:         self.logger.info("STARTING SPANISH INFLATION PREDICTION PIPELINE")
+ 847:         self.logger.info("=" * 80)
+ 848:         
+ 849:         # Initialize pipeline state
+ 850:         self.pipeline_state['start_time'] = datetime.now()
+ 851:         self.pipeline_state['status'] = 'running'
+ 852:         
+ 853:         # Start resource monitoring
+ 854:         self._start_resource_monitoring()
+ 855:         
+ 856:         try:
+ 857:             # System information
+ 858:             system_info = {
+ 859:                 'cpu_count': psutil.cpu_count(),
+ 860:                 'memory_total_gb': psutil.virtual_memory().total / 1024**3,
+ 861:                 'memory_available_gb': psutil.virtual_memory().available / 1024**3,
+ 862:                 'python_version': sys.version,
+ 863:                 'platform': sys.platform
+ 864:             }
+ 865:             
+ 866:             self.logger.info(f"System Info: {system_info['cpu_count']} CPUs, "
+ 867:                            f"{system_info['memory_total_gb']:.1f}GB total memory, "
+ 868:                            f"{system_info['memory_available_gb']:.1f}GB available")
+ 869:             
+ 870:             # Estimate pipeline duration
+ 871:             estimated_duration = self._estimate_pipeline_duration()
+ 872:             self.logger.info(f"Estimated pipeline duration: {estimated_duration/60:.1f} minutes")
+ 873:             
+ 874:             # Validate configuration
+ 875:             if not self._validate_configuration():
+ 876:                 raise Exception("Configuration validation failed")
+ 877:             
+ 878:             # Initialize modules
+ 879:             self._initialize_modules()
+ 880:             
+ 881:             # Execute pipeline steps
+ 882:             pipeline_steps = [
+ 883:                 ('data_extraction', 'Step 1: Data Extraction', self.step_1_data_extraction),
+ 884:                 ('data_processing', 'Step 2: Data Processing', self.step_2_data_processing),
+ 885:                 ('feature_engineering', 'Step 3: Feature Engineering', self.step_3_feature_engineering),
+ 886:                 ('model_training', 'Step 4: Model Training', self.step_4_model_training),
+ 887:                 ('prediction_generation', 'Step 5: Prediction Generation', self.step_5_prediction_generation),
+ 888:                 ('report_generation', 'Step 6: Report Generation', self.step_6_report_generation)
+ 889:             ]
+ 890:             
+ 891:             # Create progress reporter
+ 892:             progress_reporter = self._create_progress_reporter(len(pipeline_steps))
+ 893:             
+ 894:             for i, (step_name, step_description, step_function) in enumerate(pipeline_steps):
+ 895:                 self.logger.info(f"\n{'-' * 60}")
+ 896:                 self.logger.info(f"EXECUTING: {step_description}")
+ 897:                 self.logger.info(f"{'-' * 60}")
+ 898:                 
+ 899:                 # Report progress
+ 900:                 progress_reporter(i)
+ 901:                 
+ 902:                 try:
+ 903:                     step_result = step_function()
+ 904:                     self.logger.info(f"✓ {step_description} completed successfully")
+ 905:                 except Exception as e:
+ 906:                     self.logger.error(f"✗ {step_description} failed: {str(e)}")
+ 907:                     if not self._handle_step_error(step_name, e):
+ 908:                         break
+ 909:             
+ 910:             # Final progress report
+ 911:             progress_reporter(len(self.pipeline_state['completed_steps']))
+ 912:             
+ 913:             # Finalize pipeline
+ 914:             self.pipeline_state['end_time'] = datetime.now()
+ 915:             self.pipeline_state['duration'] = (
+ 916:                 self.pipeline_state['end_time'] - self.pipeline_state['start_time']
+ 917:             ).total_seconds()
+ 918:             
+ 919:             # Determine final status
+ 920:             if self.pipeline_state['failed_steps']:
+ 921:                 if len(self.pipeline_state['completed_steps']) == 0:
+ 922:                     self.pipeline_state['status'] = 'failed'
+ 923:                 else:
+ 924:                     self.pipeline_state['status'] = 'partial_success'
+ 925:             else:
+ 926:                 self.pipeline_state['status'] = 'success'
+ 927:             
+ 928:             # Add system info to results
+ 929:             self.pipeline_state['system_info'] = system_info
+ 930:             
+ 931:             # Generate pipeline summary
+ 932:             self._generate_pipeline_summary()
+ 933:             
+ 934:             return self.pipeline_state
+ 935:             
+ 936:         except Exception as e:
+ 937:             self.logger.error(f"Pipeline execution failed: {str(e)}")
+ 938:             self.logger.error(f"Traceback: {traceback.format_exc()}")
+ 939:             
+ 940:             self.pipeline_state['end_time'] = datetime.now()
+ 941:             self.pipeline_state['status'] = 'failed'
+ 942:             self.pipeline_state['error'] = str(e)
+ 943:             
+ 944:             return self.pipeline_state
+ 945:         
+ 946:         finally:
+ 947:             # Stop resource monitoring
+ 948:             self._stop_resource_monitoring()
+ 949:     
+ 950:     def _generate_pipeline_summary(self) -> None:
+ 951:         """Generate and log pipeline execution summary."""
+ 952:         self.logger.info("\n" + "=" * 80)
+ 953:         self.logger.info("PIPELINE EXECUTION SUMMARY")
+ 954:         self.logger.info("=" * 80)
+ 955:         
+ 956:         # Basic information
+ 957:         self.logger.info(f"Status: {self.pipeline_state['status'].upper()}")
+ 958:         self.logger.info(f"Duration: {self.pipeline_state['duration']:.2f} seconds")
+ 959:         self.logger.info(f"Completed Steps: {len(self.pipeline_state['completed_steps'])}")
+ 960:         self.logger.info(f"Failed Steps: {len(self.pipeline_state['failed_steps'])}")
+ 961:         
+ 962:         # Step details
+ 963:         if self.pipeline_state['completed_steps']:
+ 964:             self.logger.info(f"\nCompleted Steps:")
+ 965:             for step in self.pipeline_state['completed_steps']:
+ 966:                 execution_time = self.performance_metrics['execution_times'].get(step, 0)
+ 967:                 memory_usage = self.performance_metrics['memory_usage'].get(step, 0)
+ 968:                 self.logger.info(f"  ✓ {step} ({execution_time:.2f}s, {memory_usage:.1f}MB)")
+ 969:         
+ 970:         if self.pipeline_state['failed_steps']:
+ 971:             self.logger.info(f"\nFailed Steps:")
+ 972:             for step in self.pipeline_state['failed_steps']:
+ 973:                 self.logger.info(f"  ✗ {step}")
+ 974:         
+ 975:         # Performance summary
+ 976:         total_execution_time = sum(self.performance_metrics['execution_times'].values())
+ 977:         max_memory_usage = max(self.performance_metrics['memory_usage'].values()) if self.performance_metrics['memory_usage'] else 0
+ 978:         total_memory_freed = sum(opt.get('memory_freed_mb', 0) for opt in self.performance_metrics['memory_optimization'].values())
+ 979:         
+ 980:         self.logger.info(f"\nPerformance Summary:")
+ 981:         self.logger.info(f"  Total Execution Time: {total_execution_time:.2f} seconds")
+ 982:         self.logger.info(f"  Peak Memory Usage: {max_memory_usage:.1f} MB")
+ 983:         self.logger.info(f"  Total Memory Freed: {total_memory_freed:.1f} MB")
+ 984:         
+ 985:         # Resource monitoring summary
+ 986:         if self.resource_history:
+ 987:             avg_system_memory = sum(r['system_memory_percent'] for r in self.resource_history) / len(self.resource_history)
+ 988:             avg_system_cpu = sum(r['system_cpu_percent'] for r in self.resource_history) / len(self.resource_history)
+ 989:             max_process_memory = max(r['process_memory_mb'] for r in self.resource_history)
+ 990:             
+ 991:             self.logger.info(f"  Average System Memory Usage: {avg_system_memory:.1f}%")
+ 992:             self.logger.info(f"  Average System CPU Usage: {avg_system_cpu:.1f}%")
+ 993:             self.logger.info(f"  Peak Process Memory: {max_process_memory:.1f} MB")
+ 994:         
+ 995:         # Output files summary
+ 996:         self.logger.info(f"\nGenerated Outputs:")
+ 997:         
+ 998:         # Check for key outputs
+ 999:         prediction_result = self.pipeline_state['results'].get('prediction_generation', {})
+1000:         if prediction_result.get('exported_files'):
+1001:             for file_type, file_path in prediction_result['exported_files'].items():
+1002:                 self.logger.info(f"  • Predictions ({file_type.upper()}): {file_path}")
+1003:         
+1004:         report_result = self.pipeline_state['results'].get('report_generation', {})
+1005:         if report_result.get('pdf_report'):
+1006:             self.logger.info(f"  • Technical Report: {report_result['pdf_report']}")
+1007:         
+1008:         if report_result.get('visualizations'):
+1009:             self.logger.info(f"  • Visualizations: {len(report_result['visualizations'])} charts created")
+1010:         
+1011:         # Save pipeline state
+1012:         self._save_pipeline_state()
+1013:         
+1014:         self.logger.info("=" * 80)
+1015:     
+1016:     def _save_pipeline_state(self) -> None:
+1017:         """Save pipeline state to JSON file."""
+1018:         try:
+1019:             reports_dir = Path(self.config['paths']['reports'])
+1020:             state_file = reports_dir / "pipeline_execution_state.json"
+1021:             
+1022:             # Prepare state for JSON serialization
+1023:             serializable_state = self.pipeline_state.copy()
+1024:             
+1025:             # Convert datetime objects to strings
+1026:             if serializable_state['start_time']:
+1027:                 serializable_state['start_time'] = serializable_state['start_time'].isoformat()
+1028:             if serializable_state['end_time']:
+1029:                 serializable_state['end_time'] = serializable_state['end_time'].isoformat()
+1030:             
+1031:             # Helper to convert complex objects to JSON-safe structures
+1032:             def _json_safe(obj):
+1033:                 try:
+1034:                     import pandas as pd
+1035:                     import numpy as np
+1036:                     from pandas import Timestamp
+1037:                 except Exception:
+1038:                     pd = None
+1039:                     np = None
+1040:                     Timestamp = None
+1041: 
+1042:                 # Basic types
+1043:                 if obj is None or isinstance(obj, (str, int, float, bool)):
+1044:                     return obj
+1045:                 # Datetime-like
+1046:                 if hasattr(obj, 'isoformat'):
+1047:                     try:
+1048:                         return obj.isoformat()
+1049:                     except Exception:
+1050:                         pass
+1051:                 # Pandas objects
+1052:                 if pd is not None:
+1053:                     if isinstance(obj, pd.DataFrame):
+1054:                         return {
+1055:                             'type': 'DataFrame',
+1056:                             'rows': len(obj),
+1057:                             'columns': list(obj.columns)
+1058:                         }
+1059:                     if isinstance(obj, pd.Series):
+1060:                         return obj.astype(object).where(pd.notna(obj), None).tolist()
+1061:                     if Timestamp is not None and isinstance(obj, Timestamp):
+1062:                         return obj.isoformat()
+1063:                 # Numpy types
+1064:                 if np is not None and isinstance(obj, np.generic):
+1065:                     return obj.item()
+1066:                 # Dicts: convert keys to strings and values recursively
+1067:                 if isinstance(obj, dict):
+1068:                     return {str(k): _json_safe(v) for k, v in obj.items()}
+1069:                 # Iterables
+1070:                 if isinstance(obj, (list, tuple, set)):
+1071:                     return [_json_safe(v) for v in obj]
+1072:                 # Fallback to string
+1073:                 return str(obj)
+1074: 
+1075:             # Sanitize results and metrics to be JSON-safe
+1076:             if 'results' in serializable_state:
+1077:                 serializable_state['results'] = _json_safe(serializable_state['results'])
+1078:             
+1079:             # Add performance metrics (sanitized)
+1080:             serializable_state['performance_metrics'] = _json_safe(self.performance_metrics)
+1081:             
+1082:             # Add resource monitoring summary
+1083:             if self.resource_history:
+1084:                 resource_summary = {
+1085:                     'monitoring_duration': len(self.resource_history) * 5,  # 5 seconds per snapshot
+1086:                     'avg_system_memory_percent': sum(r['system_memory_percent'] for r in self.resource_history) / len(self.resource_history),
+1087:                     'avg_system_cpu_percent': sum(r['system_cpu_percent'] for r in self.resource_history) / len(self.resource_history),
+1088:                     'max_process_memory_mb': max(r['process_memory_mb'] for r in self.resource_history),
+1089:                     'min_available_memory_gb': min(r['system_memory_available_gb'] for r in self.resource_history)
+1090:                 }
+1091:                 serializable_state['resource_monitoring_summary'] = resource_summary
+1092: 
+1093:             # Save to file
+1094:             with open(state_file, 'w', encoding='utf-8') as f:
+1095:                 json.dump(serializable_state, f, indent=2, ensure_ascii=False)
+1096:             
+1097:             self.logger.info(f"Pipeline state saved to: {state_file}")
+1098:             
+1099:         except Exception as e:
+1100:             self.logger.warning(f"Could not save pipeline state: {e}")
+1101:     
+1102:     def get_pipeline_status(self) -> Dict[str, Any]:
+1103:         """
+1104:         Get current pipeline status for monitoring.
+1105:         
+1106:         Returns:
+1107:             Dict[str, Any]: Current pipeline status and metrics
+1108:         """
+1109:         current_time = datetime.now()
+1110:         
+1111:         status = {
+1112:             'status': self.pipeline_state['status'],
+1113:             'current_step': self.pipeline_state.get('current_step'),
+1114:             'completed_steps': len(self.pipeline_state['completed_steps']),
+1115:             'failed_steps': len(self.pipeline_state['failed_steps']),
+1116:             'total_steps': 6,
+1117:             'start_time': self.pipeline_state.get('start_time'),
+1118:             'current_time': current_time
+1119:         }
+1120:         
+1121:         # Add duration if pipeline has started
+1122:         if self.pipeline_state.get('start_time'):
+1123:             if self.pipeline_state.get('end_time'):
+1124:                 status['duration'] = self.pipeline_state['duration']
+1125:             else:
+1126:                 status['duration'] = (current_time - self.pipeline_state['start_time']).total_seconds()
+1127:         
+1128:         # Add current resource usage
+1129:         try:
+1130:             process = psutil.Process()
+1131:             system_memory = psutil.virtual_memory()
+1132:             
+1133:             status['current_resources'] = {
+1134:                 'process_memory_mb': process.memory_info().rss / 1024 / 1024,
+1135:                 'process_cpu_percent': process.cpu_percent(),
+1136:                 'system_memory_percent': system_memory.percent,
+1137:                 'system_memory_available_gb': system_memory.available / 1024 / 1024 / 1024
+1138:             }
+1139:         except Exception:
+1140:             status['current_resources'] = {}
+1141:         
+1142:         # Add performance metrics summary
+1143:         if self.performance_metrics['execution_times']:
+1144:             status['performance_summary'] = {
+1145:                 'total_execution_time': sum(self.performance_metrics['execution_times'].values()),
+1146:                 'average_step_time': sum(self.performance_metrics['execution_times'].values()) / len(self.performance_metrics['execution_times']),
+1147:                 'peak_memory_usage': max(self.performance_metrics['memory_usage'].values()) if self.performance_metrics['memory_usage'] else 0
+1148:             }
+1149:         
+1150:         return status
+1151:     
+1152:     def create_status_report(self, output_path: Optional[str] = None) -> str:
+1153:         """
+1154:         Create a detailed status report file.
+1155:         
+1156:         Args:
+1157:             output_path (str, optional): Path for the status report file
+1158:             
+1159:         Returns:
+1160:             str: Path to the created status report
+1161:         """
+1162:         if output_path is None:
+1163:             reports_dir = Path(self.config['paths']['reports'])
+1164:             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+1165:             output_path = reports_dir / f"pipeline_status_report_{timestamp}.txt"
+1166:         
+1167:         status = self.get_pipeline_status()
+1168:         
+1169:         report_lines = [
+1170:             "=" * 80,
+1171:             "SPANISH INFLATION PREDICTION PIPELINE - STATUS REPORT",
+1172:             "=" * 80,
+1173:             f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+1174:             "",
+1175:             "PIPELINE STATUS:",
+1176:             f"  Status: {status['status'].upper()}",
+1177:             f"  Current Step: {status.get('current_step', 'N/A')}",
+1178:             f"  Progress: {status['completed_steps']}/{status['total_steps']} steps completed",
+1179:             f"  Duration: {status.get('duration', 0):.2f} seconds",
+1180:             "",
+1181:             "STEP DETAILS:",
+1182:         ]
+1183:         
+1184:         # Add completed steps
+1185:         if self.pipeline_state['completed_steps']:
+1186:             report_lines.append("  Completed Steps:")
+1187:             for step in self.pipeline_state['completed_steps']:
+1188:                 execution_time = self.performance_metrics['execution_times'].get(step, 0)
+1189:                 memory_usage = self.performance_metrics['memory_usage'].get(step, 0)
+1190:                 report_lines.append(f"    ✓ {step} ({execution_time:.2f}s, {memory_usage:.1f}MB)")
+1191:         
+1192:         # Add failed steps
+1193:         if self.pipeline_state['failed_steps']:
+1194:             report_lines.append("  Failed Steps:")
+1195:             for step in self.pipeline_state['failed_steps']:
+1196:                 report_lines.append(f"    ✗ {step}")
+1197:         
+1198:         # Add current resources
+1199:         current_resources = status.get('current_resources', {})
+1200:         if current_resources:
+1201:             report_lines.extend([
+1202:                 "",
+1203:                 "CURRENT RESOURCE USAGE:",
+1204:                 f"  Process Memory: {current_resources.get('process_memory_mb', 0):.1f} MB",
+1205:                 f"  Process CPU: {current_resources.get('process_cpu_percent', 0):.1f}%",
+1206:                 f"  System Memory: {current_resources.get('system_memory_percent', 0):.1f}%",
+1207:                 f"  Available Memory: {current_resources.get('system_memory_available_gb', 0):.1f} GB"
+1208:             ])
+1209:         
+1210:         # Add performance summary
+1211:         perf_summary = status.get('performance_summary', {})
+1212:         if perf_summary:
+1213:             report_lines.extend([
+1214:                 "",
+1215:                 "PERFORMANCE SUMMARY:",
+1216:                 f"  Total Execution Time: {perf_summary.get('total_execution_time', 0):.2f} seconds",
+1217:                 f"  Average Step Time: {perf_summary.get('average_step_time', 0):.2f} seconds",
+1218:                 f"  Peak Memory Usage: {perf_summary.get('peak_memory_usage', 0):.1f} MB"
+1219:             ])
+1220:         
+1221:         # Add memory optimization summary
+1222:         if self.performance_metrics['memory_optimization']:
+1223:             total_freed = sum(opt.get('memory_freed_mb', 0) for opt in self.performance_metrics['memory_optimization'].values())
+1224:             total_collected = sum(opt.get('objects_collected', 0) for opt in self.performance_metrics['memory_optimization'].values())
+1225:             
+1226:             report_lines.extend([
+1227:                 "",
+1228:                 "MEMORY OPTIMIZATION:",
+1229:                 f"  Total Memory Freed: {total_freed:.1f} MB",
+1230:                 f"  Total Objects Collected: {total_collected}"
+1231:             ])
+1232:         
+1233:         report_lines.append("=" * 80)
+1234:         
+1235:         # Write report to file
+1236:         try:
+1237:             with open(output_path, 'w', encoding='utf-8') as f:
+1238:                 f.write('\n'.join(report_lines))
+1239:             
+1240:             self.logger.info(f"Status report created: {output_path}")
+1241:             return str(output_path)
+1242:             
+1243:         except Exception as e:
+1244:             self.logger.error(f"Error creating status report: {e}")
+1245:             raise
+1246: 
+1247: 
+1248: def main():
+1249:     """Main entry point for the inflation prediction pipeline."""
+1250:     try:
+1251:         # Create and run pipeline
+1252:         pipeline = InflationPredictionPipeline()
+1253:         results = pipeline.run_pipeline()
+1254:         
+1255:         # Exit with appropriate code
+1256:         if results['status'] == 'success':
+1257:             print("\n🎉 Pipeline completed successfully!")
+1258:             sys.exit(0)
+1259:         elif results['status'] == 'partial_success':
+1260:             print("\n⚠️  Pipeline completed with some failures.")
+1261:             sys.exit(1)
+1262:         else:
+1263:             print("\n❌ Pipeline failed.")
+1264:             sys.exit(2)
+1265:             
+1266:     except KeyboardInterrupt:
+1267:         print("\n⏹️  Pipeline interrupted by user.")
+1268:         sys.exit(130)
+1269:     except Exception as e:
+1270:         print(f"\n💥 Pipeline crashed: {str(e)}")
+1271:         sys.exit(1)
+1272: 
+1273: 
+1274: if __name__ == "__main__":
+1275:     main()
+1276: 
+
+----------------------------------------
+FIN DEL ARCHIVO
+================================================================================

@@ -1,0 +1,111 @@
+================================================================================
+DOCUMENTACIÓN DEL PROCESO DE PREDICCIÓN DE INFLACIÓN
+================================================================================
+Fecha de generación: 08/11/2025 17:51:34
+
+DESCRIPCIÓN GENERAL:
+----------------------------------------
+Sistema automatizado para la predicción de la tasa de inflación en España
+utilizando datos del Instituto Nacional de Estadística (INE) y modelos de
+inteligencia artificial (ARIMA, Random Forest, LSTM).
+
+COMPONENTES PRINCIPALES:
+----------------------------------------
+
+1. EXTRACTOR DE DATOS INE (ine_extractor.py)
+   • Conecta con la API del INE
+   • Descarga datos de IPC general, por grupos e IPCA
+   • Maneja errores de conexión con reintentos
+   • Guarda datos en formato CSV
+
+2. PROCESADOR DE DATOS (data_cleaner.py)
+   • Carga datos brutos desde CSV
+   • Detecta y corrige valores faltantes
+   • Identifica y trata outliers estadísticos
+   • Normaliza fechas y calcula tasas de inflación
+
+3. INGENIERO DE CARACTERÍSTICAS (feature_engineering.py)
+   • Crea características lag (1, 3, 6, 12 meses)
+   • Genera medias móviles y componentes estacionales
+   • Prepara datos para modelos de machine learning
+
+4. ENTRENADOR DE MODELOS (model_trainer.py)
+   • Implementa modelos ARIMA, Random Forest y LSTM
+   • Divide datos en entrenamiento y validación
+   • Evalúa modelos con métricas MAE, RMSE, MAPE
+   • Selecciona el mejor modelo automáticamente
+
+5. PREDICTOR (predictor.py)
+   • Carga el mejor modelo entrenado
+   • Genera predicciones para 12 meses
+   • Calcula intervalos de confianza
+   • Valida y exporta predicciones
+
+6. GENERADOR DE INFORMES (report_generator.py)
+   • Crea visualizaciones con matplotlib/seaborn
+   • Genera análisis económico interpretativo
+   • Produce informes técnicos en PDF
+   • Documenta código fuente del proceso
+
+FLUJO DE EJECUCIÓN:
+----------------------------------------
+
+Paso 1: Descarga de Datos
+├── Conectar con API del INE
+├── Descargar IPC general (serie principal)
+├── Descargar IPC por grupos (sectorial)
+├── Descargar IPCA (armonizado europeo)
+└── Guardar en data/raw/
+
+Paso 2: Procesamiento de Datos
+├── Cargar datos brutos
+├── Limpiar valores faltantes (interpolación)
+├── Detectar outliers (IQR, Z-score)
+├── Calcular tasas de inflación
+└── Guardar en data/processed/
+
+Paso 3: Ingeniería de Características
+├── Crear características lag
+├── Generar medias móviles
+├── Añadir componentes estacionales
+└── Preparar datasets para ML
+
+Paso 4: Entrenamiento de Modelos
+├── Dividir datos (80% entrenamiento, 20% validación)
+├── Entrenar ARIMA (series temporales)
+├── Entrenar Random Forest (no lineal)
+├── Entrenar LSTM (redes neuronales)
+├── Evaluar con métricas de error
+└── Seleccionar mejor modelo
+
+Paso 5: Generación de Predicciones
+├── Cargar mejor modelo
+├── Generar predicciones 12 meses
+├── Calcular intervalos de confianza
+└── Exportar resultados
+
+Paso 6: Generación de Informes
+├── Crear visualizaciones (6 tipos de gráficos)
+├── Generar análisis económico interpretativo
+├── Producir informe técnico PDF
+└── Documentar proceso y código
+
+MÉTRICAS DE EVALUACIÓN:
+----------------------------------------
+• MAE (Mean Absolute Error): Error absoluto promedio
+• RMSE (Root Mean Square Error): Raíz del error cuadrático medio
+• MAPE (Mean Absolute Percentage Error): Error porcentual absoluto medio
+
+OUTPUTS GENERADOS:
+----------------------------------------
+• data/processed/: Datos limpios y procesados
+• models/: Modelos entrenados guardados
+• reports/: Visualizaciones, análisis y documentación
+• reports/informe_tecnico_*.pdf: Informe técnico completo
+
+CONFIGURACIÓN:
+----------------------------------------
+• config/config.yaml: Parámetros del sistema
+• requirements.txt: Dependencias de Python
+
+================================================================================

@@ -1,0 +1,35 @@
+================================================================================
+RESUMEN DE DOCUMENTACIÓN DE CÓDIGO
+================================================================================
+Fecha de generación: 08/11/2025 17:51:34
+Total de archivos documentados: 7
+
+ARCHIVOS DOCUMENTADOS:
+----------------------------------------
+• data_cleaner.py -> data_cleaner_documentation.txt
+• feature_engineering.py -> feature_engineering_documentation.txt
+• ine_extractor.py -> ine_extractor_documentation.txt
+• main.py -> main_documentation.txt
+• model_trainer.py -> model_trainer_documentation.txt
+• predictor.py -> predictor_documentation.txt
+• report_generator.py -> report_generator_documentation.txt
+
+ESTRUCTURA DEL SISTEMA:
+----------------------------------------
+• ine_extractor.py: Descarga de datos del INE
+• data_cleaner.py: Limpieza y procesamiento de datos
+• feature_engineering.py: Ingeniería de características
+• model_trainer.py: Entrenamiento de modelos de IA
+• predictor.py: Generación de predicciones
+• report_generator.py: Generación de informes y visualizaciones
+
+FLUJO DE PROCESAMIENTO:
+----------------------------------------
+1. Extracción de datos (INE) -> datos brutos
+2. Limpieza de datos -> datos procesados
+3. Ingeniería de características -> características para ML
+4. Entrenamiento de modelos -> modelos entrenados
+5. Generación de predicciones -> predicciones futuras
+6. Generación de informes -> análisis y visualizaciones
+
+================================================================================
