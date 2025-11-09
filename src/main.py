@@ -20,13 +20,12 @@ import json
 import warnings
 warnings.filterwarnings('ignore')
 
-# Import all modules
-from ine_extractor import INEExtractor
-from data_cleaner import DataProcessor
-from feature_engineering import FeatureEngineer
-from model_trainer import ModelTrainer
-from predictor import Predictor
-from report_generator import ReportGenerator
+from src.ine_extractor import INEExtractor
+from src.data_cleaner import DataProcessor
+from src.feature_engineering import FeatureEngineer
+from src.model_trainer import ModelTrainer
+from src.predictor import Predictor
+from src.report_generator import ReportGenerator
 
 
 class InflationPredictionPipeline:
