@@ -20,12 +20,39 @@ import json
 import warnings
 warnings.filterwarnings('ignore')
 
-from src.ine_extractor import INEExtractor
-from src.data_cleaner import DataProcessor
-from src.feature_engineering import FeatureEngineer
-from src.model_trainer import ModelTrainer
-from src.predictor import Predictor
-from src.report_generator import ReportGenerator
+import sys
+import types
+
+# Import modules in a way that works both when running as a package
+# (e.g. `python -m src.main`) and when running the script directly
+# (`python src/main.py`). Also create `src.*` aliases in sys.modules so
+# test decorators that patch 'src.<module>' target the same module objects.
+try:
+    # Prefer package-qualified imports when available
+    from src.ine_extractor import INEExtractor
+    from src.data_cleaner import DataProcessor
+    from src.feature_engineering import FeatureEngineer
+    from src.model_trainer import ModelTrainer
+    from src.predictor import Predictor
+    from src.report_generator import ReportGenerator
+except Exception:
+    # Fallback to local top-level imports when running as a script
+    from ine_extractor import INEExtractor
+    from data_cleaner import DataProcessor
+    from feature_engineering import FeatureEngineer
+    from model_trainer import ModelTrainer
+    from predictor import Predictor
+    from report_generator import ReportGenerator
+
+    # Ensure 'src' package alias exists and point src.* names to the
+    # same module objects so tests that patch 'src.<module>' work.
+    sys.modules.setdefault('src', types.ModuleType('src'))
+    sys.modules.setdefault('src.ine_extractor', sys.modules.get('ine_extractor'))
+    sys.modules.setdefault('src.data_cleaner', sys.modules.get('data_cleaner'))
+    sys.modules.setdefault('src.feature_engineering', sys.modules.get('feature_engineering'))
+    sys.modules.setdefault('src.model_trainer', sys.modules.get('model_trainer'))
+    sys.modules.setdefault('src.predictor', sys.modules.get('predictor'))
+    sys.modules.setdefault('src.report_generator', sys.modules.get('report_generator'))
 
 
 class InflationPredictionPipeline:
