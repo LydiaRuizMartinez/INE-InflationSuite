@@ -9,6 +9,7 @@ from typing import List, Dict, Any, Optional
 import logging
 from pathlib import Path
 import yaml
+from pandas.api.types import is_numeric_dtype
 
 # Optional sklearn imports for feature selection
 try:
@@ -93,8 +94,17 @@ class FeatureEngineer:
         if target_columns is None:
             # Use numeric columns, prioritizing IPC-related columns
             numeric_cols = lagged_data.select_dtypes(include=[np.number]).columns.tolist()
-            ipc_cols = [col for col in numeric_cols if 'ipc' in col.lower()]
-            rate_cols = [col for col in numeric_cols if 'rate' in col.lower()]
+            # Exclude columns that look like already-engineered features (avoid cascading feature creation)
+            engineered_keywords = [
+                '_lag_', '_ma_', '_std_', '_min_', '_max_',
+                'month', 'quarter', 'year', 'day_of_year', 'sin', 'cos', 'is_',
+                '_trend_', '_roc_', '_volatility_', '_cv_', '_position_', '_deviation_',
+                '_zscore_', '_acceleration'
+            ]
+            base_numeric_cols = [c for c in numeric_cols if not any(k in c for k in engineered_keywords)]
+
+            ipc_cols = [col for col in base_numeric_cols if 'ipc' in col.lower()]
+            rate_cols = [col for col in base_numeric_cols if 'rate' in col.lower()]
             
             # Prioritize IPC and rate columns, then other numeric columns
             target_columns = ipc_cols + rate_cols + [col for col in numeric_cols 
@@ -102,7 +112,8 @@ class FeatureEngineer:
         
         # Create lag features
         for col in target_columns:
-            if col in lagged_data.columns and lagged_data[col].dtype in ['float64', 'int64']:
+            # Only create lags for original/base numeric columns (skip engineered ones)
+            if col in lagged_data.columns and col in base_numeric_cols and lagged_data[col].dtype in ['float64', 'int64']:
                 for lag in lags:
                     lag_col_name = f"{col}_lag_{lag}"
                     lagged_data[lag_col_name] = lagged_data[col].shift(lag)
@@ -141,39 +152,49 @@ class FeatureEngineer:
         if target_columns is None:
             # Use numeric columns, prioritizing IPC-related columns
             numeric_cols = rolling_data.select_dtypes(include=[np.number]).columns.tolist()
-            ipc_cols = [col for col in numeric_cols if 'ipc' in col.lower()]
-            rate_cols = [col for col in numeric_cols if 'rate' in col.lower()]
-            
-            # Prioritize IPC and rate columns, then other numeric columns
-            target_columns = ipc_cols + rate_cols + [col for col in numeric_cols 
+            # Exclude already-engineered numeric columns to avoid creating rollings on seasonal/dummy features
+            engineered_keywords = [
+                '_lag_', '_ma_', '_std_', '_min_', '_max_',
+                'month', 'quarter', 'year', 'day_of_year', 'sin', 'cos', 'is_',
+                '_trend_', '_roc_', '_volatility_', '_cv_', '_position_', '_deviation_',
+                '_zscore_', '_acceleration'
+            ]
+            base_numeric_cols = [c for c in numeric_cols if not any(k in c for k in engineered_keywords)]
+
+            ipc_cols = [col for col in base_numeric_cols if 'ipc' in col.lower()]
+            rate_cols = [col for col in base_numeric_cols if 'rate' in col.lower()]
+
+            # Prioritize IPC and rate columns, then other base numeric columns
+            target_columns = ipc_cols + rate_cols + [col for col in base_numeric_cols 
                                                    if col not in ipc_cols + rate_cols]
         
         # Create rolling features
         for col in target_columns:
-            if col in rolling_data.columns and rolling_data[col].dtype in ['float64', 'int64']:
+            # Only create rolling features for base numeric columns
+            if col in rolling_data.columns and col in base_numeric_cols and rolling_data[col].dtype in ['float64', 'int64']:
                 for window in windows:
                     # Moving average
                     ma_col_name = f"{col}_ma_{window}"
                     rolling_data[ma_col_name] = rolling_data[col].rolling(
-                        window=window, min_periods=1
+                        window=window, min_periods=window
                     ).mean()
                     
                     # Rolling standard deviation
                     std_col_name = f"{col}_std_{window}"
                     rolling_data[std_col_name] = rolling_data[col].rolling(
-                        window=window, min_periods=1
+                        window=window, min_periods=window
                     ).std()
                     
                     # Rolling minimum
                     min_col_name = f"{col}_min_{window}"
                     rolling_data[min_col_name] = rolling_data[col].rolling(
-                        window=window, min_periods=1
+                        window=window, min_periods=window
                     ).min()
                     
                     # Rolling maximum
                     max_col_name = f"{col}_max_{window}"
                     rolling_data[max_col_name] = rolling_data[col].rolling(
-                        window=window, min_periods=1
+                        window=window, min_periods=window
                     ).max()
                     
                 self.logger.info(f"Created rolling features for column '{col}' with windows: {windows}")
@@ -336,7 +357,7 @@ class FeatureEngineer:
                 
                 # Trend indicators
                 # Linear trend (slope over rolling window)
-                for window in [6, 12, 24]:
+                for window in [3, 6, 12]:
                     trend_col = f"{col}_trend_{window}"
                     indicators_data[trend_col] = indicators_data[col].rolling(
                         window=window, min_periods=2
@@ -431,7 +452,8 @@ class FeatureEngineer:
     
     def create_feature_selection_methods(self, data: pd.DataFrame, 
                                        target_column: str,
-                                       method: str = 'correlation') -> List[str]:
+                                       method: str = 'correlation',
+                                       top_k: Optional[int] = None) -> List[str]:
         """
         Create feature selection methods to identify most relevant features.
         
@@ -468,13 +490,21 @@ class FeatureEngineer:
 
             # Select features with correlation > 0.1
             selected_features = correlations[correlations > 0.1].index.tolist()
+            # Limit to top_k if requested
+            if top_k is not None:
+                selected_features = selected_features[:top_k]
 
         elif method == 'variance':
             # Select features with sufficient variance
             variances = data[feature_columns].var()
             # Select features with variance > 1% of maximum variance
             threshold = variances.max() * 0.01
-            selected_features = variances[variances > threshold].index.tolist()
+            selected = variances.sort_values(ascending=False).index.tolist()
+            # If top_k provided, pick top_k by variance; otherwise use threshold rule
+            if top_k is not None:
+                selected_features = selected[:top_k]
+            else:
+                selected_features = variances[variances > threshold].index.tolist()
 
         elif method == 'mutual_info':
             if not _SKLEARN_AVAILABLE:
@@ -489,6 +519,8 @@ class FeatureEngineer:
                 mi_series = pd.Series(mi, index=feature_columns).sort_values(ascending=False)
                 # Select features with MI greater than the median
                 selected_features = mi_series[mi_series > mi_series.median()].index.tolist()
+                if top_k is not None:
+                    selected_features = selected_features[:top_k]
             except Exception as e:
                 self.logger.warning(f"Mutual information computation failed: {e}. Falling back to correlation.")
                 return self.create_feature_selection_methods(data, target_column, 'correlation')
@@ -496,6 +528,8 @@ class FeatureEngineer:
         elif method == 'correlation_matrix':
             # Remove multicollinear features above a threshold (default 0.9)
             selected_features = self.select_features_correlation_threshold(data[feature_columns], threshold=0.9)
+            if top_k is not None:
+                selected_features = selected_features[:top_k]
 
         elif method == 'model_based':
             if not _SKLEARN_AVAILABLE:
@@ -505,6 +539,8 @@ class FeatureEngineer:
             X = data[feature_columns].fillna(method='ffill').fillna(method='bfill').fillna(0)
             y = data[target_column].values
             selected_features = self.select_features_model_based(X, y)
+            if top_k is not None:
+                selected_features = selected_features[:top_k]
 
         else:
             self.logger.error(f"Unknown feature selection method: {method}")
@@ -610,6 +646,13 @@ class FeatureEngineer:
         # Feature category counts
         for category, features in summary['feature_categories'].items():
             summary[f'{category}_count'] = len(features)
+
+        # Count original (non-engineered) features
+        engineered_cols = set()
+        for features in summary['feature_categories'].values():
+            engineered_cols.update(features)
+        original_cols = [c for c in data.columns if c not in engineered_cols]
+        summary['original_features'] = len(original_cols)
         
         self.logger.info("Generated feature engineering summary")
         return summary
