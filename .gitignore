@@ -67,7 +67,7 @@ models/
 *.onnx
 *.pt
 
-# Reports (generated outputs)
+# Reports 
 reports/visualizations/
 reports/**/*.pdf
 reports/**/*.csv
@@ -76,11 +76,6 @@ reports/pipeline_execution_state.json
 # Keep human-written docs in reports
 !reports/**/*.md
 !reports/**/*.txt
-
-# Configuration (track only examples)
-config/
-!config/*.example.yaml
-!config/*.example.yml
 
 # Notebooks
 .ipynb_checkpoints/

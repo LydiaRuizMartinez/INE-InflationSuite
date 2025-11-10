@@ -1,7 +1,7 @@
 ================================================================================
 RESUMEN DE DOCUMENTACIÓN DE CÓDIGO
 ================================================================================
-Fecha de generación: 08/11/2025 17:51:34
+Fecha de generación: 09/11/2025 13:20:20
 Total de archivos documentados: 7
 
 ARCHIVOS DOCUMENTADOS:

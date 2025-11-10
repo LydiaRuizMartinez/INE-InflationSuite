@@ -1,8 +1,8 @@
 ================================================================================
 DOCUMENTACIÓN DE CÓDIGO: feature_engineering.py
 ================================================================================
-Fecha de generación: 08/11/2025 17:51:34
-Número de líneas: 615
+Fecha de generación: 09/11/2025 13:20:20
+Número de líneas: 659
 
 CONTENIDO DEL ARCHIVO:
 ----------------------------------------
@@ -18,610 +18,654 @@ CONTENIDO DEL ARCHIVO:
    9: import logging
   10: from pathlib import Path
   11: import yaml
-  12: 
-  13: # Optional sklearn imports for feature selection
-  14: try:
-  15:     from sklearn.feature_selection import mutual_info_regression, SelectFromModel
-  16:     from sklearn.ensemble import RandomForestRegressor
-  17:     from sklearn.preprocessing import StandardScaler
-  18:     from pandas.api.types import is_numeric_dtype
-  19:     _SKLEARN_AVAILABLE = True
-  20: except Exception:
-  21:     # sklearn may not be installed in all environments; fall back gracefully
-  22:     _SKLEARN_AVAILABLE = False
-  23: 
-  24: class FeatureEngineer:
-  25:     """
-  26:     Handles feature engineering operations for inflation prediction models.
-  27:     
-  28:     This class provides methods for creating lag features, rolling statistics,
-  29:     seasonal components, and economic indicators from time series data.
-  30:     """
-  31:     
-  32:     def __init__(self, config_path: str = "config/config.yaml"):
-  33:         """
-  34:         Initialize the FeatureEngineer with configuration.
-  35:         
-  36:         Args:
-  37:             config_path (str): Path to configuration file
-  38:         """
-  39:         self.logger = logging.getLogger(__name__)
-  40:         self.config = self._load_config(config_path)
-  41:         
-  42:         # Default feature parameters from config
-  43:         self.default_lags = self.config.get('features', {}).get('lags', [1, 3, 6, 12])
-  44:         self.default_windows = self.config.get('features', {}).get('rolling_windows', [3, 6, 12])
-  45:         self.seasonal_periods = self.config.get('features', {}).get('seasonal_periods', [12])
-  46:         
-  47:     def _load_config(self, config_path: str) -> Dict[str, Any]:
-  48:         """
-  49:         Load configuration from YAML file.
-  50:         
-  51:         Args:
-  52:             config_path (str): Path to configuration file
-  53:             
-  54:         Returns:
-  55:             Dict[str, Any]: Configuration dictionary
-  56:         """
-  57:         try:
-  58:             with open(config_path, 'r', encoding='utf-8') as file:
-  59:                 config = yaml.safe_load(file)
-  60:                 self.logger.info(f"Loaded configuration from {config_path}")
-  61:                 return config
-  62:         except FileNotFoundError:
-  63:             self.logger.warning(f"Config file not found: {config_path}. Using default parameters.")
-  64:             return {}
-  65:         except Exception as e:
-  66:             self.logger.error(f"Error loading config: {e}. Using default parameters.")
-  67:             return {}
-  68:     
-  69:     def create_lag_features(self, data: pd.DataFrame, lags: Optional[List[int]] = None, 
-  70:                            target_columns: Optional[List[str]] = None) -> pd.DataFrame:
-  71:         """
-  72:         Create lag features for specified columns.
-  73:         
-  74:         Creates lagged versions of target columns for time series modeling.
-  75:         Supports 1, 3, 6, 12 month lags as specified in requirements.
-  76:         
-  77:         Args:
-  78:             data (pd.DataFrame): Input data with time series
-  79:             lags (List[int], optional): List of lag periods. Defaults to config values.
-  80:             target_columns (List[str], optional): Columns to create lags for. 
-  81:                                                 If None, uses numeric columns.
-  82:         
-  83:         Returns:
-  84:             pd.DataFrame: Data with added lag features
-  85:         """
-  86:         if lags is None:
-  87:             lags = self.default_lags
-  88:             
-  89:         # Create a copy to avoid modifying original data
-  90:         lagged_data = data.copy()
-  91:         
-  92:         # Determine target columns
-  93:         if target_columns is None:
-  94:             # Use numeric columns, prioritizing IPC-related columns
-  95:             numeric_cols = lagged_data.select_dtypes(include=[np.number]).columns.tolist()
-  96:             ipc_cols = [col for col in numeric_cols if 'ipc' in col.lower()]
-  97:             rate_cols = [col for col in numeric_cols if 'rate' in col.lower()]
-  98:             
-  99:             # Prioritize IPC and rate columns, then other numeric columns
- 100:             target_columns = ipc_cols + rate_cols + [col for col in numeric_cols 
- 101:                                                    if col not in ipc_cols + rate_cols]
- 102:         
- 103:         # Create lag features
- 104:         for col in target_columns:
- 105:             if col in lagged_data.columns and lagged_data[col].dtype in ['float64', 'int64']:
- 106:                 for lag in lags:
- 107:                     lag_col_name = f"{col}_lag_{lag}"
- 108:                     lagged_data[lag_col_name] = lagged_data[col].shift(lag)
- 109:                     
- 110:                 self.logger.info(f"Created lag features for column '{col}' with lags: {lags}")
- 111:         
- 112:         # Validate feature consistency
- 113:         self._validate_lag_features(lagged_data, lags, target_columns)
- 114:         
- 115:         return lagged_data
- 116:     
- 117:     def create_rolling_features(self, data: pd.DataFrame, windows: Optional[List[int]] = None,
- 118:                                target_columns: Optional[List[str]] = None) -> pd.DataFrame:
- 119:         """
- 120:         Create rolling window features (moving averages, std, min, max).
- 121:         
- 122:         Creates rolling statistics for specified window sizes to capture
- 123:         short and medium-term trends in the data.
- 124:         
- 125:         Args:
- 126:             data (pd.DataFrame): Input data with time series
- 127:             windows (List[int], optional): List of window sizes. Defaults to config values.
- 128:             target_columns (List[str], optional): Columns to create rolling features for.
- 129:                                                 If None, uses numeric columns.
- 130:         
- 131:         Returns:
- 132:             pd.DataFrame: Data with added rolling features
- 133:         """
- 134:         if windows is None:
- 135:             windows = self.default_windows
- 136:             
- 137:         # Create a copy to avoid modifying original data
- 138:         rolling_data = data.copy()
- 139:         
- 140:         # Determine target columns
- 141:         if target_columns is None:
- 142:             # Use numeric columns, prioritizing IPC-related columns
- 143:             numeric_cols = rolling_data.select_dtypes(include=[np.number]).columns.tolist()
- 144:             ipc_cols = [col for col in numeric_cols if 'ipc' in col.lower()]
- 145:             rate_cols = [col for col in numeric_cols if 'rate' in col.lower()]
- 146:             
- 147:             # Prioritize IPC and rate columns, then other numeric columns
- 148:             target_columns = ipc_cols + rate_cols + [col for col in numeric_cols 
- 149:                                                    if col not in ipc_cols + rate_cols]
+  12: from pandas.api.types import is_numeric_dtype
+  13: 
+  14: # Optional sklearn imports for feature selection
+  15: try:
+  16:     from sklearn.feature_selection import mutual_info_regression, SelectFromModel
+  17:     from sklearn.ensemble import RandomForestRegressor
+  18:     from sklearn.preprocessing import StandardScaler
+  19:     from pandas.api.types import is_numeric_dtype
+  20:     _SKLEARN_AVAILABLE = True
+  21: except Exception:
+  22:     # sklearn may not be installed in all environments; fall back gracefully
+  23:     _SKLEARN_AVAILABLE = False
+  24: 
+  25: class FeatureEngineer:
+  26:     """
+  27:     Handles feature engineering operations for inflation prediction models.
+  28:     
+  29:     This class provides methods for creating lag features, rolling statistics,
+  30:     seasonal components, and economic indicators from time series data.
+  31:     """
+  32:     
+  33:     def __init__(self, config_path: str = "config/config.yaml"):
+  34:         """
+  35:         Initialize the FeatureEngineer with configuration.
+  36:         
+  37:         Args:
+  38:             config_path (str): Path to configuration file
+  39:         """
+  40:         self.logger = logging.getLogger(__name__)
+  41:         self.config = self._load_config(config_path)
+  42:         
+  43:         # Default feature parameters from config
+  44:         self.default_lags = self.config.get('features', {}).get('lags', [1, 3, 6, 12])
+  45:         self.default_windows = self.config.get('features', {}).get('rolling_windows', [3, 6, 12])
+  46:         self.seasonal_periods = self.config.get('features', {}).get('seasonal_periods', [12])
+  47:         
+  48:     def _load_config(self, config_path: str) -> Dict[str, Any]:
+  49:         """
+  50:         Load configuration from YAML file.
+  51:         
+  52:         Args:
+  53:             config_path (str): Path to configuration file
+  54:             
+  55:         Returns:
+  56:             Dict[str, Any]: Configuration dictionary
+  57:         """
+  58:         try:
+  59:             with open(config_path, 'r', encoding='utf-8') as file:
+  60:                 config = yaml.safe_load(file)
+  61:                 self.logger.info(f"Loaded configuration from {config_path}")
+  62:                 return config
+  63:         except FileNotFoundError:
+  64:             self.logger.warning(f"Config file not found: {config_path}. Using default parameters.")
+  65:             return {}
+  66:         except Exception as e:
+  67:             self.logger.error(f"Error loading config: {e}. Using default parameters.")
+  68:             return {}
+  69:     
+  70:     def create_lag_features(self, data: pd.DataFrame, lags: Optional[List[int]] = None, 
+  71:                            target_columns: Optional[List[str]] = None) -> pd.DataFrame:
+  72:         """
+  73:         Create lag features for specified columns.
+  74:         
+  75:         Creates lagged versions of target columns for time series modeling.
+  76:         Supports 1, 3, 6, 12 month lags as specified in requirements.
+  77:         
+  78:         Args:
+  79:             data (pd.DataFrame): Input data with time series
+  80:             lags (List[int], optional): List of lag periods. Defaults to config values.
+  81:             target_columns (List[str], optional): Columns to create lags for. 
+  82:                                                 If None, uses numeric columns.
+  83:         
+  84:         Returns:
+  85:             pd.DataFrame: Data with added lag features
+  86:         """
+  87:         if lags is None:
+  88:             lags = self.default_lags
+  89:             
+  90:         # Create a copy to avoid modifying original data
+  91:         lagged_data = data.copy()
+  92:         
+  93:         # Determine target columns
+  94:         if target_columns is None:
+  95:             # Use numeric columns, prioritizing IPC-related columns
+  96:             numeric_cols = lagged_data.select_dtypes(include=[np.number]).columns.tolist()
+  97:             # Exclude columns that look like already-engineered features (avoid cascading feature creation)
+  98:             engineered_keywords = [
+  99:                 '_lag_', '_ma_', '_std_', '_min_', '_max_',
+ 100:                 'month', 'quarter', 'year', 'day_of_year', 'sin', 'cos', 'is_',
+ 101:                 '_trend_', '_roc_', '_volatility_', '_cv_', '_position_', '_deviation_',
+ 102:                 '_zscore_', '_acceleration'
+ 103:             ]
+ 104:             base_numeric_cols = [c for c in numeric_cols if not any(k in c for k in engineered_keywords)]
+ 105: 
+ 106:             ipc_cols = [col for col in base_numeric_cols if 'ipc' in col.lower()]
+ 107:             rate_cols = [col for col in base_numeric_cols if 'rate' in col.lower()]
+ 108:             
+ 109:             # Prioritize IPC and rate columns, then other numeric columns
+ 110:             target_columns = ipc_cols + rate_cols + [col for col in numeric_cols 
+ 111:                                                    if col not in ipc_cols + rate_cols]
+ 112:         
+ 113:         # Create lag features
+ 114:         for col in target_columns:
+ 115:             # Only create lags for original/base numeric columns (skip engineered ones)
+ 116:             if col in lagged_data.columns and col in base_numeric_cols and lagged_data[col].dtype in ['float64', 'int64']:
+ 117:                 for lag in lags:
+ 118:                     lag_col_name = f"{col}_lag_{lag}"
+ 119:                     lagged_data[lag_col_name] = lagged_data[col].shift(lag)
+ 120:                     
+ 121:                 self.logger.info(f"Created lag features for column '{col}' with lags: {lags}")
+ 122:         
+ 123:         # Validate feature consistency
+ 124:         self._validate_lag_features(lagged_data, lags, target_columns)
+ 125:         
+ 126:         return lagged_data
+ 127:     
+ 128:     def create_rolling_features(self, data: pd.DataFrame, windows: Optional[List[int]] = None,
+ 129:                                target_columns: Optional[List[str]] = None) -> pd.DataFrame:
+ 130:         """
+ 131:         Create rolling window features (moving averages, std, min, max).
+ 132:         
+ 133:         Creates rolling statistics for specified window sizes to capture
+ 134:         short and medium-term trends in the data.
+ 135:         
+ 136:         Args:
+ 137:             data (pd.DataFrame): Input data with time series
+ 138:             windows (List[int], optional): List of window sizes. Defaults to config values.
+ 139:             target_columns (List[str], optional): Columns to create rolling features for.
+ 140:                                                 If None, uses numeric columns.
+ 141:         
+ 142:         Returns:
+ 143:             pd.DataFrame: Data with added rolling features
+ 144:         """
+ 145:         if windows is None:
+ 146:             windows = self.default_windows
+ 147:             
+ 148:         # Create a copy to avoid modifying original data
+ 149:         rolling_data = data.copy()
  150:         
- 151:         # Create rolling features
- 152:         for col in target_columns:
- 153:             if col in rolling_data.columns and rolling_data[col].dtype in ['float64', 'int64']:
- 154:                 for window in windows:
- 155:                     # Moving average
- 156:                     ma_col_name = f"{col}_ma_{window}"
- 157:                     rolling_data[ma_col_name] = rolling_data[col].rolling(
- 158:                         window=window, min_periods=1
- 159:                     ).mean()
- 160:                     
- 161:                     # Rolling standard deviation
- 162:                     std_col_name = f"{col}_std_{window}"
- 163:                     rolling_data[std_col_name] = rolling_data[col].rolling(
- 164:                         window=window, min_periods=1
- 165:                     ).std()
- 166:                     
- 167:                     # Rolling minimum
- 168:                     min_col_name = f"{col}_min_{window}"
- 169:                     rolling_data[min_col_name] = rolling_data[col].rolling(
- 170:                         window=window, min_periods=1
- 171:                     ).min()
- 172:                     
- 173:                     # Rolling maximum
- 174:                     max_col_name = f"{col}_max_{window}"
- 175:                     rolling_data[max_col_name] = rolling_data[col].rolling(
- 176:                         window=window, min_periods=1
- 177:                     ).max()
- 178:                     
- 179:                 self.logger.info(f"Created rolling features for column '{col}' with windows: {windows}")
- 180:         
- 181:         return rolling_data
- 182:     
- 183:     def _validate_lag_features(self, data: pd.DataFrame, lags: List[int], 
- 184:                               target_columns: List[str]) -> None:
- 185:         """
- 186:         Validate consistency of lag features.
- 187:         
- 188:         Checks that lag features were created correctly and logs any issues.
- 189:         
- 190:         Args:
- 191:             data (pd.DataFrame): Data with lag features
- 192:             lags (List[int]): List of lag periods used
- 193:             target_columns (List[str]): Original target columns
- 194:         """
- 195:         validation_issues = []
- 196:         
- 197:         for col in target_columns:
- 198:             if col in data.columns:
- 199:                 for lag in lags:
- 200:                     lag_col_name = f"{col}_lag_{lag}"
- 201:                     
- 202:                     if lag_col_name not in data.columns:
- 203:                         validation_issues.append(f"Missing lag feature: {lag_col_name}")
- 204:                         continue
- 205:                     
- 206:                     # Check if lag feature has expected number of NaN values at the beginning
- 207:                     expected_nans = lag
- 208:                     actual_nans = data[lag_col_name].head(lag).isnull().sum()
- 209:                     
- 210:                     if actual_nans != expected_nans:
- 211:                         validation_issues.append(
- 212:                             f"Lag feature {lag_col_name} has {actual_nans} NaN values, "
- 213:                             f"expected {expected_nans}"
- 214:                         )
- 215:                     
- 216:                     # Check if non-NaN values match original column shifted by lag
- 217:                     if len(data) > lag:
- 218:                         original_value = data[col].iloc[lag]
- 219:                         lag_value = data[lag_col_name].iloc[0]
- 220:                         
- 221:                         if not pd.isna(original_value) and not pd.isna(lag_value):
- 222:                             if not np.isclose(original_value, lag_value, rtol=1e-10):
- 223:                                 validation_issues.append(
- 224:                                     f"Lag feature {lag_col_name} values don't match expected shift"
- 225:                                 )
- 226:         
- 227:         if validation_issues:
- 228:             for issue in validation_issues:
- 229:                 self.logger.warning(f"Validation issue: {issue}")
- 230:         else:
- 231:             self.logger.info("All lag features passed validation checks")
- 232:     
- 233:     def create_seasonal_features(self, data: pd.DataFrame, 
- 234:                                 date_column: Optional[str] = None) -> pd.DataFrame:
- 235:         """
- 236:         Create seasonal features for monthly patterns.
- 237:         
- 238:         Extracts seasonal components including month, quarter, and cyclical
- 239:         features to capture seasonal inflation patterns.
- 240:         
- 241:         Args:
- 242:             data (pd.DataFrame): Input data with datetime information
- 243:             date_column (str, optional): Name of date column. If None, auto-detects.
- 244:         
- 245:         Returns:
- 246:             pd.DataFrame: Data with added seasonal features
- 247:         """
- 248:         seasonal_data = data.copy()
- 249:         
- 250:         # Find date column if not specified
- 251:         if date_column is None:
- 252:             date_columns = seasonal_data.select_dtypes(include=['datetime64']).columns
- 253:             if len(date_columns) == 0:
- 254:                 # Try to find date-like columns
- 255:                 potential_date_cols = [col for col in seasonal_data.columns 
- 256:                                      if any(keyword in col.lower() 
- 257:                                            for keyword in ['fecha', 'date', 'periodo', 'period'])]
- 258:                 if potential_date_cols:
- 259:                     date_column = potential_date_cols[0]
- 260:                     # Convert to datetime if not already
- 261:                     seasonal_data[date_column] = pd.to_datetime(seasonal_data[date_column])
- 262:                 else:
- 263:                     self.logger.error("No date column found for seasonal feature creation")
- 264:                     return seasonal_data
- 265:             else:
- 266:                 date_column = date_columns[0]
- 267:         
- 268:         # Ensure date column is datetime
- 269:         if seasonal_data[date_column].dtype != 'datetime64[ns]':
- 270:             seasonal_data[date_column] = pd.to_datetime(seasonal_data[date_column])
- 271:         
- 272:         # Extract basic seasonal components
- 273:         seasonal_data['month'] = seasonal_data[date_column].dt.month
- 274:         seasonal_data['quarter'] = seasonal_data[date_column].dt.quarter
- 275:         seasonal_data['year'] = seasonal_data[date_column].dt.year
- 276:         seasonal_data['day_of_year'] = seasonal_data[date_column].dt.dayofyear
- 277:         
- 278:         # Create cyclical features for month (sine/cosine encoding)
- 279:         seasonal_data['month_sin'] = np.sin(2 * np.pi * seasonal_data['month'] / 12)
- 280:         seasonal_data['month_cos'] = np.cos(2 * np.pi * seasonal_data['month'] / 12)
- 281:         
- 282:         # Create cyclical features for quarter
- 283:         seasonal_data['quarter_sin'] = np.sin(2 * np.pi * seasonal_data['quarter'] / 4)
- 284:         seasonal_data['quarter_cos'] = np.cos(2 * np.pi * seasonal_data['quarter'] / 4)
- 285:         
- 286:         # Create seasonal dummy variables for months
- 287:         month_dummies = pd.get_dummies(seasonal_data['month'], prefix='month')
- 288:         seasonal_data = pd.concat([seasonal_data, month_dummies], axis=1)
- 289:         
- 290:         # Create seasonal dummy variables for quarters
- 291:         quarter_dummies = pd.get_dummies(seasonal_data['quarter'], prefix='quarter')
- 292:         seasonal_data = pd.concat([seasonal_data, quarter_dummies], axis=1)
- 293:         
- 294:         # Create seasonal indicators for specific economic periods
- 295:         # Spanish economic calendar considerations
- 296:         seasonal_data['is_january'] = (seasonal_data['month'] == 1).astype(int)  # New year effects
- 297:         seasonal_data['is_summer'] = seasonal_data['month'].isin([7, 8]).astype(int)  # Summer season
- 298:         seasonal_data['is_christmas'] = (seasonal_data['month'] == 12).astype(int)  # Christmas effects
- 299:         seasonal_data['is_back_to_school'] = (seasonal_data['month'] == 9).astype(int)  # September effects
- 300:         
- 301:         self.logger.info(f"Created seasonal features based on date column '{date_column}'")
- 302:         return seasonal_data
- 303:     
- 304:     def create_economic_indicators(self, data: pd.DataFrame, 
- 305:                                   target_columns: Optional[List[str]] = None) -> pd.DataFrame:
- 306:         """
- 307:         Create economic indicators for trend analysis.
- 308:         
- 309:         Generates economic indicators including trend components, volatility measures,
- 310:         and momentum indicators for inflation analysis.
- 311:         
- 312:         Args:
- 313:             data (pd.DataFrame): Input data with inflation metrics
- 314:             target_columns (List[str], optional): Columns to create indicators for.
- 315:                                                 If None, uses IPC-related columns.
- 316:         
- 317:         Returns:
- 318:             pd.DataFrame: Data with added economic indicators
- 319:         """
- 320:         indicators_data = data.copy()
+ 151:         # Determine target columns
+ 152:         if target_columns is None:
+ 153:             # Use numeric columns, prioritizing IPC-related columns
+ 154:             numeric_cols = rolling_data.select_dtypes(include=[np.number]).columns.tolist()
+ 155:             # Exclude already-engineered numeric columns to avoid creating rollings on seasonal/dummy features
+ 156:             engineered_keywords = [
+ 157:                 '_lag_', '_ma_', '_std_', '_min_', '_max_',
+ 158:                 'month', 'quarter', 'year', 'day_of_year', 'sin', 'cos', 'is_',
+ 159:                 '_trend_', '_roc_', '_volatility_', '_cv_', '_position_', '_deviation_',
+ 160:                 '_zscore_', '_acceleration'
+ 161:             ]
+ 162:             base_numeric_cols = [c for c in numeric_cols if not any(k in c for k in engineered_keywords)]
+ 163: 
+ 164:             ipc_cols = [col for col in base_numeric_cols if 'ipc' in col.lower()]
+ 165:             rate_cols = [col for col in base_numeric_cols if 'rate' in col.lower()]
+ 166: 
+ 167:             # Prioritize IPC and rate columns, then other base numeric columns
+ 168:             target_columns = ipc_cols + rate_cols + [col for col in base_numeric_cols 
+ 169:                                                    if col not in ipc_cols + rate_cols]
+ 170:         
+ 171:         # Create rolling features
+ 172:         for col in target_columns:
+ 173:             # Only create rolling features for base numeric columns
+ 174:             if col in rolling_data.columns and col in base_numeric_cols and rolling_data[col].dtype in ['float64', 'int64']:
+ 175:                 for window in windows:
+ 176:                     # Moving average
+ 177:                     ma_col_name = f"{col}_ma_{window}"
+ 178:                     rolling_data[ma_col_name] = rolling_data[col].rolling(
+ 179:                         window=window, min_periods=window
+ 180:                     ).mean()
+ 181:                     
+ 182:                     # Rolling standard deviation
+ 183:                     std_col_name = f"{col}_std_{window}"
+ 184:                     rolling_data[std_col_name] = rolling_data[col].rolling(
+ 185:                         window=window, min_periods=window
+ 186:                     ).std()
+ 187:                     
+ 188:                     # Rolling minimum
+ 189:                     min_col_name = f"{col}_min_{window}"
+ 190:                     rolling_data[min_col_name] = rolling_data[col].rolling(
+ 191:                         window=window, min_periods=window
+ 192:                     ).min()
+ 193:                     
+ 194:                     # Rolling maximum
+ 195:                     max_col_name = f"{col}_max_{window}"
+ 196:                     rolling_data[max_col_name] = rolling_data[col].rolling(
+ 197:                         window=window, min_periods=window
+ 198:                     ).max()
+ 199:                     
+ 200:                 self.logger.info(f"Created rolling features for column '{col}' with windows: {windows}")
+ 201:         
+ 202:         return rolling_data
+ 203:     
+ 204:     def _validate_lag_features(self, data: pd.DataFrame, lags: List[int], 
+ 205:                               target_columns: List[str]) -> None:
+ 206:         """
+ 207:         Validate consistency of lag features.
+ 208:         
+ 209:         Checks that lag features were created correctly and logs any issues.
+ 210:         
+ 211:         Args:
+ 212:             data (pd.DataFrame): Data with lag features
+ 213:             lags (List[int]): List of lag periods used
+ 214:             target_columns (List[str]): Original target columns
+ 215:         """
+ 216:         validation_issues = []
+ 217:         
+ 218:         for col in target_columns:
+ 219:             if col in data.columns:
+ 220:                 for lag in lags:
+ 221:                     lag_col_name = f"{col}_lag_{lag}"
+ 222:                     
+ 223:                     if lag_col_name not in data.columns:
+ 224:                         validation_issues.append(f"Missing lag feature: {lag_col_name}")
+ 225:                         continue
+ 226:                     
+ 227:                     # Check if lag feature has expected number of NaN values at the beginning
+ 228:                     expected_nans = lag
+ 229:                     actual_nans = data[lag_col_name].head(lag).isnull().sum()
+ 230:                     
+ 231:                     if actual_nans != expected_nans:
+ 232:                         validation_issues.append(
+ 233:                             f"Lag feature {lag_col_name} has {actual_nans} NaN values, "
+ 234:                             f"expected {expected_nans}"
+ 235:                         )
+ 236:                     
+ 237:                     # Check if non-NaN values match original column shifted by lag
+ 238:                     if len(data) > lag:
+ 239:                         original_value = data[col].iloc[lag]
+ 240:                         lag_value = data[lag_col_name].iloc[0]
+ 241:                         
+ 242:                         if not pd.isna(original_value) and not pd.isna(lag_value):
+ 243:                             if not np.isclose(original_value, lag_value, rtol=1e-10):
+ 244:                                 validation_issues.append(
+ 245:                                     f"Lag feature {lag_col_name} values don't match expected shift"
+ 246:                                 )
+ 247:         
+ 248:         if validation_issues:
+ 249:             for issue in validation_issues:
+ 250:                 self.logger.warning(f"Validation issue: {issue}")
+ 251:         else:
+ 252:             self.logger.info("All lag features passed validation checks")
+ 253:     
+ 254:     def create_seasonal_features(self, data: pd.DataFrame, 
+ 255:                                 date_column: Optional[str] = None) -> pd.DataFrame:
+ 256:         """
+ 257:         Create seasonal features for monthly patterns.
+ 258:         
+ 259:         Extracts seasonal components including month, quarter, and cyclical
+ 260:         features to capture seasonal inflation patterns.
+ 261:         
+ 262:         Args:
+ 263:             data (pd.DataFrame): Input data with datetime information
+ 264:             date_column (str, optional): Name of date column. If None, auto-detects.
+ 265:         
+ 266:         Returns:
+ 267:             pd.DataFrame: Data with added seasonal features
+ 268:         """
+ 269:         seasonal_data = data.copy()
+ 270:         
+ 271:         # Find date column if not specified
+ 272:         if date_column is None:
+ 273:             date_columns = seasonal_data.select_dtypes(include=['datetime64']).columns
+ 274:             if len(date_columns) == 0:
+ 275:                 # Try to find date-like columns
+ 276:                 potential_date_cols = [col for col in seasonal_data.columns 
+ 277:                                      if any(keyword in col.lower() 
+ 278:                                            for keyword in ['fecha', 'date', 'periodo', 'period'])]
+ 279:                 if potential_date_cols:
+ 280:                     date_column = potential_date_cols[0]
+ 281:                     # Convert to datetime if not already
+ 282:                     seasonal_data[date_column] = pd.to_datetime(seasonal_data[date_column])
+ 283:                 else:
+ 284:                     self.logger.error("No date column found for seasonal feature creation")
+ 285:                     return seasonal_data
+ 286:             else:
+ 287:                 date_column = date_columns[0]
+ 288:         
+ 289:         # Ensure date column is datetime
+ 290:         if seasonal_data[date_column].dtype != 'datetime64[ns]':
+ 291:             seasonal_data[date_column] = pd.to_datetime(seasonal_data[date_column])
+ 292:         
+ 293:         # Extract basic seasonal components
+ 294:         seasonal_data['month'] = seasonal_data[date_column].dt.month
+ 295:         seasonal_data['quarter'] = seasonal_data[date_column].dt.quarter
+ 296:         seasonal_data['year'] = seasonal_data[date_column].dt.year
+ 297:         seasonal_data['day_of_year'] = seasonal_data[date_column].dt.dayofyear
+ 298:         
+ 299:         # Create cyclical features for month (sine/cosine encoding)
+ 300:         seasonal_data['month_sin'] = np.sin(2 * np.pi * seasonal_data['month'] / 12)
+ 301:         seasonal_data['month_cos'] = np.cos(2 * np.pi * seasonal_data['month'] / 12)
+ 302:         
+ 303:         # Create cyclical features for quarter
+ 304:         seasonal_data['quarter_sin'] = np.sin(2 * np.pi * seasonal_data['quarter'] / 4)
+ 305:         seasonal_data['quarter_cos'] = np.cos(2 * np.pi * seasonal_data['quarter'] / 4)
+ 306:         
+ 307:         # Create seasonal dummy variables for months
+ 308:         month_dummies = pd.get_dummies(seasonal_data['month'], prefix='month')
+ 309:         seasonal_data = pd.concat([seasonal_data, month_dummies], axis=1)
+ 310:         
+ 311:         # Create seasonal dummy variables for quarters
+ 312:         quarter_dummies = pd.get_dummies(seasonal_data['quarter'], prefix='quarter')
+ 313:         seasonal_data = pd.concat([seasonal_data, quarter_dummies], axis=1)
+ 314:         
+ 315:         # Create seasonal indicators for specific economic periods
+ 316:         # Spanish economic calendar considerations
+ 317:         seasonal_data['is_january'] = (seasonal_data['month'] == 1).astype(int)  # New year effects
+ 318:         seasonal_data['is_summer'] = seasonal_data['month'].isin([7, 8]).astype(int)  # Summer season
+ 319:         seasonal_data['is_christmas'] = (seasonal_data['month'] == 12).astype(int)  # Christmas effects
+ 320:         seasonal_data['is_back_to_school'] = (seasonal_data['month'] == 9).astype(int)  # September effects
  321:         
- 322:         # Determine target columns
- 323:         if target_columns is None:
- 324:             # Focus on IPC and rate columns
- 325:             numeric_cols = indicators_data.select_dtypes(include=[np.number]).columns.tolist()
- 326:             ipc_cols = [col for col in numeric_cols if 'ipc' in col.lower()]
- 327:             rate_cols = [col for col in numeric_cols if 'rate' in col.lower()]
- 328:             target_columns = ipc_cols + rate_cols
- 329:             
- 330:             if not target_columns:
- 331:                 # Fallback to all numeric columns
- 332:                 target_columns = numeric_cols
- 333:         
- 334:         for col in target_columns:
- 335:             if col in indicators_data.columns and indicators_data[col].dtype in ['float64', 'int64']:
- 336:                 
- 337:                 # Trend indicators
- 338:                 # Linear trend (slope over rolling window)
- 339:                 for window in [6, 12, 24]:
- 340:                     trend_col = f"{col}_trend_{window}"
- 341:                     indicators_data[trend_col] = indicators_data[col].rolling(
- 342:                         window=window, min_periods=2
- 343:                     ).apply(self._calculate_trend_slope, raw=False)
- 344:                 
- 345:                 # Momentum indicators
- 346:                 # Rate of change over different periods
- 347:                 for period in [1, 3, 6, 12]:
- 348:                     roc_col = f"{col}_roc_{period}"
- 349:                     indicators_data[roc_col] = indicators_data[col].pct_change(periods=period) * 100
- 350:                 
- 351:                 # Acceleration (second derivative)
- 352:                 accel_col = f"{col}_acceleration"
- 353:                 indicators_data[accel_col] = indicators_data[col].diff().diff()
- 354:                 
- 355:                 # Volatility indicators
- 356:                 # Rolling standard deviation (volatility)
- 357:                 for window in [3, 6, 12]:
- 358:                     vol_col = f"{col}_volatility_{window}"
- 359:                     indicators_data[vol_col] = indicators_data[col].rolling(
- 360:                         window=window, min_periods=1
- 361:                     ).std()
- 362:                 
- 363:                 # Coefficient of variation (normalized volatility)
- 364:                 for window in [6, 12]:
- 365:                     cv_col = f"{col}_cv_{window}"
- 366:                     rolling_mean = indicators_data[col].rolling(window=window, min_periods=1).mean()
- 367:                     rolling_std = indicators_data[col].rolling(window=window, min_periods=1).std()
- 368:                     indicators_data[cv_col] = rolling_std / rolling_mean
- 369:                 
- 370:                 # Relative position indicators
- 371:                 # Position within recent range (0-1 scale)
- 372:                 for window in [6, 12, 24]:
- 373:                     pos_col = f"{col}_position_{window}"
- 374:                     rolling_min = indicators_data[col].rolling(window=window, min_periods=1).min()
- 375:                     rolling_max = indicators_data[col].rolling(window=window, min_periods=1).max()
- 376:                     range_size = rolling_max - rolling_min
- 377:                     # Avoid division by zero
- 378:                     indicators_data[pos_col] = np.where(
- 379:                         range_size != 0,
- 380:                         (indicators_data[col] - rolling_min) / range_size,
- 381:                         0.5  # Middle position when no range
- 382:                     )
+ 322:         self.logger.info(f"Created seasonal features based on date column '{date_column}'")
+ 323:         return seasonal_data
+ 324:     
+ 325:     def create_economic_indicators(self, data: pd.DataFrame, 
+ 326:                                   target_columns: Optional[List[str]] = None) -> pd.DataFrame:
+ 327:         """
+ 328:         Create economic indicators for trend analysis.
+ 329:         
+ 330:         Generates economic indicators including trend components, volatility measures,
+ 331:         and momentum indicators for inflation analysis.
+ 332:         
+ 333:         Args:
+ 334:             data (pd.DataFrame): Input data with inflation metrics
+ 335:             target_columns (List[str], optional): Columns to create indicators for.
+ 336:                                                 If None, uses IPC-related columns.
+ 337:         
+ 338:         Returns:
+ 339:             pd.DataFrame: Data with added economic indicators
+ 340:         """
+ 341:         indicators_data = data.copy()
+ 342:         
+ 343:         # Determine target columns
+ 344:         if target_columns is None:
+ 345:             # Focus on IPC and rate columns
+ 346:             numeric_cols = indicators_data.select_dtypes(include=[np.number]).columns.tolist()
+ 347:             ipc_cols = [col for col in numeric_cols if 'ipc' in col.lower()]
+ 348:             rate_cols = [col for col in numeric_cols if 'rate' in col.lower()]
+ 349:             target_columns = ipc_cols + rate_cols
+ 350:             
+ 351:             if not target_columns:
+ 352:                 # Fallback to all numeric columns
+ 353:                 target_columns = numeric_cols
+ 354:         
+ 355:         for col in target_columns:
+ 356:             if col in indicators_data.columns and indicators_data[col].dtype in ['float64', 'int64']:
+ 357:                 
+ 358:                 # Trend indicators
+ 359:                 # Linear trend (slope over rolling window)
+ 360:                 for window in [3, 6, 12]:
+ 361:                     trend_col = f"{col}_trend_{window}"
+ 362:                     indicators_data[trend_col] = indicators_data[col].rolling(
+ 363:                         window=window, min_periods=2
+ 364:                     ).apply(self._calculate_trend_slope, raw=False)
+ 365:                 
+ 366:                 # Momentum indicators
+ 367:                 # Rate of change over different periods
+ 368:                 for period in [1, 3, 6, 12]:
+ 369:                     roc_col = f"{col}_roc_{period}"
+ 370:                     indicators_data[roc_col] = indicators_data[col].pct_change(periods=period) * 100
+ 371:                 
+ 372:                 # Acceleration (second derivative)
+ 373:                 accel_col = f"{col}_acceleration"
+ 374:                 indicators_data[accel_col] = indicators_data[col].diff().diff()
+ 375:                 
+ 376:                 # Volatility indicators
+ 377:                 # Rolling standard deviation (volatility)
+ 378:                 for window in [3, 6, 12]:
+ 379:                     vol_col = f"{col}_volatility_{window}"
+ 380:                     indicators_data[vol_col] = indicators_data[col].rolling(
+ 381:                         window=window, min_periods=1
+ 382:                     ).std()
  383:                 
- 384:                 # Deviation from moving average
+ 384:                 # Coefficient of variation (normalized volatility)
  385:                 for window in [6, 12]:
- 386:                     dev_col = f"{col}_ma_deviation_{window}"
- 387:                     ma = indicators_data[col].rolling(window=window, min_periods=1).mean()
- 388:                     indicators_data[dev_col] = indicators_data[col] - ma
- 389:                     
- 390:                     # Normalized deviation (z-score)
- 391:                     zscore_col = f"{col}_zscore_{window}"
- 392:                     ma_std = indicators_data[col].rolling(window=window, min_periods=1).std()
- 393:                     indicators_data[zscore_col] = np.where(
- 394:                         ma_std != 0,
- 395:                         (indicators_data[col] - ma) / ma_std,
- 396:                         0
- 397:                     )
- 398:                 
- 399:                 self.logger.info(f"Created economic indicators for column '{col}'")
- 400:         
- 401:         return indicators_data
- 402:     
- 403:     def _calculate_trend_slope(self, series: pd.Series) -> float:
- 404:         """
- 405:         Calculate linear trend slope for a time series window.
- 406:         
- 407:         Args:
- 408:             series (pd.Series): Time series data window
- 409:             
- 410:         Returns:
- 411:             float: Slope of linear trend
- 412:         """
- 413:         if len(series) < 2 or series.isnull().all():
- 414:             return np.nan
- 415:         
- 416:         # Remove NaN values
- 417:         clean_series = series.dropna()
- 418:         if len(clean_series) < 2:
- 419:             return np.nan
- 420:         
- 421:         # Create x values (time indices)
- 422:         x = np.arange(len(clean_series))
- 423:         y = clean_series.values
- 424:         
- 425:         # Calculate slope using least squares
- 426:         try:
- 427:             slope = np.polyfit(x, y, 1)[0]
- 428:             return slope
- 429:         except:
- 430:             return np.nan
- 431:     
- 432:     def create_feature_selection_methods(self, data: pd.DataFrame, 
- 433:                                        target_column: str,
- 434:                                        method: str = 'correlation') -> List[str]:
- 435:         """
- 436:         Create feature selection methods to identify most relevant features.
- 437:         
- 438:         Selects features based on correlation, mutual information, or variance.
- 439:         
- 440:         Args:
- 441:             data (pd.DataFrame): Data with features
- 442:             target_column (str): Target variable for feature selection
- 443:             method (str): Selection method ('correlation', 'variance', 'mutual_info')
- 444:         
- 445:         Returns:
- 446:             List[str]: List of selected feature names
- 447:         """
- 448:         if target_column not in data.columns:
- 449:             self.logger.error(f"Target column '{target_column}' not found in data")
- 450:             return []
- 451: 
- 452:         # Get feature columns (exclude target and non-numeric columns)
- 453:         # Use a robust numeric check to include other numeric dtypes
- 454:         feature_columns = [col for col in data.columns 
- 455:                           if col != target_column and 
- 456:                           is_numeric_dtype(data[col])]
- 457: 
- 458:         if not feature_columns:
- 459:             self.logger.warning("No numeric feature columns found for selection")
- 460:             return []
- 461: 
- 462:         selected_features = []
- 463: 
- 464:         if method == 'correlation':
- 465:             # Select features based on correlation with target
- 466:             correlations = data[feature_columns + [target_column]].corr()[target_column].abs()
- 467:             correlations = correlations.drop(target_column).sort_values(ascending=False)
- 468: 
- 469:             # Select features with correlation > 0.1
- 470:             selected_features = correlations[correlations > 0.1].index.tolist()
- 471: 
- 472:         elif method == 'variance':
- 473:             # Select features with sufficient variance
- 474:             variances = data[feature_columns].var()
- 475:             # Select features with variance > 1% of maximum variance
- 476:             threshold = variances.max() * 0.01
- 477:             selected_features = variances[variances > threshold].index.tolist()
- 478: 
- 479:         elif method == 'mutual_info':
- 480:             if not _SKLEARN_AVAILABLE:
- 481:                 self.logger.warning("sklearn not available: falling back to correlation method for mutual_info")
- 482:                 return self.create_feature_selection_methods(data, target_column, 'correlation')
+ 386:                     cv_col = f"{col}_cv_{window}"
+ 387:                     rolling_mean = indicators_data[col].rolling(window=window, min_periods=1).mean()
+ 388:                     rolling_std = indicators_data[col].rolling(window=window, min_periods=1).std()
+ 389:                     indicators_data[cv_col] = rolling_std / rolling_mean
+ 390:                 
+ 391:                 # Relative position indicators
+ 392:                 # Position within recent range (0-1 scale)
+ 393:                 for window in [6, 12, 24]:
+ 394:                     pos_col = f"{col}_position_{window}"
+ 395:                     rolling_min = indicators_data[col].rolling(window=window, min_periods=1).min()
+ 396:                     rolling_max = indicators_data[col].rolling(window=window, min_periods=1).max()
+ 397:                     range_size = rolling_max - rolling_min
+ 398:                     # Avoid division by zero
+ 399:                     indicators_data[pos_col] = np.where(
+ 400:                         range_size != 0,
+ 401:                         (indicators_data[col] - rolling_min) / range_size,
+ 402:                         0.5  # Middle position when no range
+ 403:                     )
+ 404:                 
+ 405:                 # Deviation from moving average
+ 406:                 for window in [6, 12]:
+ 407:                     dev_col = f"{col}_ma_deviation_{window}"
+ 408:                     ma = indicators_data[col].rolling(window=window, min_periods=1).mean()
+ 409:                     indicators_data[dev_col] = indicators_data[col] - ma
+ 410:                     
+ 411:                     # Normalized deviation (z-score)
+ 412:                     zscore_col = f"{col}_zscore_{window}"
+ 413:                     ma_std = indicators_data[col].rolling(window=window, min_periods=1).std()
+ 414:                     indicators_data[zscore_col] = np.where(
+ 415:                         ma_std != 0,
+ 416:                         (indicators_data[col] - ma) / ma_std,
+ 417:                         0
+ 418:                     )
+ 419:                 
+ 420:                 self.logger.info(f"Created economic indicators for column '{col}'")
+ 421:         
+ 422:         return indicators_data
+ 423:     
+ 424:     def _calculate_trend_slope(self, series: pd.Series) -> float:
+ 425:         """
+ 426:         Calculate linear trend slope for a time series window.
+ 427:         
+ 428:         Args:
+ 429:             series (pd.Series): Time series data window
+ 430:             
+ 431:         Returns:
+ 432:             float: Slope of linear trend
+ 433:         """
+ 434:         if len(series) < 2 or series.isnull().all():
+ 435:             return np.nan
+ 436:         
+ 437:         # Remove NaN values
+ 438:         clean_series = series.dropna()
+ 439:         if len(clean_series) < 2:
+ 440:             return np.nan
+ 441:         
+ 442:         # Create x values (time indices)
+ 443:         x = np.arange(len(clean_series))
+ 444:         y = clean_series.values
+ 445:         
+ 446:         # Calculate slope using least squares
+ 447:         try:
+ 448:             slope = np.polyfit(x, y, 1)[0]
+ 449:             return slope
+ 450:         except:
+ 451:             return np.nan
+ 452:     
+ 453:     def create_feature_selection_methods(self, data: pd.DataFrame, 
+ 454:                                        target_column: str,
+ 455:                                        method: str = 'correlation',
+ 456:                                        top_k: Optional[int] = None) -> List[str]:
+ 457:         """
+ 458:         Create feature selection methods to identify most relevant features.
+ 459:         
+ 460:         Selects features based on correlation, mutual information, or variance.
+ 461:         
+ 462:         Args:
+ 463:             data (pd.DataFrame): Data with features
+ 464:             target_column (str): Target variable for feature selection
+ 465:             method (str): Selection method ('correlation', 'variance', 'mutual_info')
+ 466:         
+ 467:         Returns:
+ 468:             List[str]: List of selected feature names
+ 469:         """
+ 470:         if target_column not in data.columns:
+ 471:             self.logger.error(f"Target column '{target_column}' not found in data")
+ 472:             return []
+ 473: 
+ 474:         # Get feature columns (exclude target and non-numeric columns)
+ 475:         # Use a robust numeric check to include other numeric dtypes
+ 476:         feature_columns = [col for col in data.columns 
+ 477:                           if col != target_column and 
+ 478:                           is_numeric_dtype(data[col])]
+ 479: 
+ 480:         if not feature_columns:
+ 481:             self.logger.warning("No numeric feature columns found for selection")
+ 482:             return []
  483: 
- 484:             # Use mutual information regression to score features
- 485:             X = data[feature_columns].fillna(method='ffill').fillna(method='bfill').fillna(0)
- 486:             y = data[target_column].values
- 487:             try:
- 488:                 mi = mutual_info_regression(X, y, discrete_features=False)
- 489:                 mi_series = pd.Series(mi, index=feature_columns).sort_values(ascending=False)
- 490:                 # Select features with MI greater than the median
- 491:                 selected_features = mi_series[mi_series > mi_series.median()].index.tolist()
- 492:             except Exception as e:
- 493:                 self.logger.warning(f"Mutual information computation failed: {e}. Falling back to correlation.")
- 494:                 return self.create_feature_selection_methods(data, target_column, 'correlation')
- 495: 
- 496:         elif method == 'correlation_matrix':
- 497:             # Remove multicollinear features above a threshold (default 0.9)
- 498:             selected_features = self.select_features_correlation_threshold(data[feature_columns], threshold=0.9)
- 499: 
- 500:         elif method == 'model_based':
- 501:             if not _SKLEARN_AVAILABLE:
- 502:                 self.logger.error("sklearn not available: cannot perform model-based selection")
- 503:                 return feature_columns
- 504:             # Use a simple random forest selector
- 505:             X = data[feature_columns].fillna(method='ffill').fillna(method='bfill').fillna(0)
- 506:             y = data[target_column].values
- 507:             selected_features = self.select_features_model_based(X, y)
+ 484:         selected_features = []
+ 485: 
+ 486:         if method == 'correlation':
+ 487:             # Select features based on correlation with target
+ 488:             correlations = data[feature_columns + [target_column]].corr()[target_column].abs()
+ 489:             correlations = correlations.drop(target_column).sort_values(ascending=False)
+ 490: 
+ 491:             # Select features with correlation > 0.1
+ 492:             selected_features = correlations[correlations > 0.1].index.tolist()
+ 493:             # Limit to top_k if requested
+ 494:             if top_k is not None:
+ 495:                 selected_features = selected_features[:top_k]
+ 496: 
+ 497:         elif method == 'variance':
+ 498:             # Select features with sufficient variance
+ 499:             variances = data[feature_columns].var()
+ 500:             # Select features with variance > 1% of maximum variance
+ 501:             threshold = variances.max() * 0.01
+ 502:             selected = variances.sort_values(ascending=False).index.tolist()
+ 503:             # If top_k provided, pick top_k by variance; otherwise use threshold rule
+ 504:             if top_k is not None:
+ 505:                 selected_features = selected[:top_k]
+ 506:             else:
+ 507:                 selected_features = variances[variances > threshold].index.tolist()
  508: 
- 509:         else:
- 510:             self.logger.error(f"Unknown feature selection method: {method}")
- 511:             return feature_columns
- 512: 
- 513:         self.logger.info(f"Selected {len(selected_features)} features using {method} method")
- 514:         return selected_features
- 515: 
- 516:     def select_features_correlation_threshold(self, data: pd.DataFrame, threshold: float = 0.9) -> List[str]:
- 517:         """
- 518:         Drop features that are highly correlated with each other above a threshold.
- 519: 
- 520:         Keeps the feature with the highest variance among correlated pairs.
- 521:         """
- 522:         if data.shape[1] == 0:
- 523:             return []
- 524: 
- 525:         corr_matrix = data.corr().abs()
- 526:         upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
- 527:         to_drop = [column for column in upper.columns if any(upper[column] > threshold)]
- 528: 
- 529:         selected = [col for col in data.columns if col not in to_drop]
- 530:         self.logger.info(f"Dropped {len(to_drop)} features with correlation above {threshold}")
- 531:         return selected
- 532: 
- 533:     def select_features_model_based(self, X: pd.DataFrame, y: np.ndarray, 
- 534:                                     model: Optional[Any] = None, threshold: Any = 'median') -> List[str]:
- 535:         """
- 536:         Model-based feature selection using SelectFromModel.
- 537: 
- 538:         By default uses a RandomForestRegressor to compute importances.
- 539:         """
- 540:         if model is None:
- 541:             model = RandomForestRegressor(n_estimators=100, random_state=42)
- 542: 
- 543:         # Scale features to help some models (optional)
- 544:         scaler = StandardScaler()
- 545:         try:
- 546:             X_scaled = scaler.fit_transform(X)
- 547:         except Exception:
- 548:             X_scaled = X.values
- 549: 
- 550:         try:
- 551:             model.fit(X_scaled, y)
- 552:             selector = SelectFromModel(model, threshold=threshold, prefit=True)
- 553:             mask = selector.get_support()
- 554:             selected = list(X.columns[mask])
- 555:             self.logger.info(f"Model-based selection chose {len(selected)} features")
- 556:             return selected
- 557:         except Exception as e:
- 558:             self.logger.warning(f"Model-based selection failed: {e}. Returning all features.")
- 559:             return list(X.columns)
- 560:     
- 561:     def get_feature_summary(self, data: pd.DataFrame) -> Dict[str, Any]:
- 562:         """
- 563:         Generate summary of created features.
- 564:         
- 565:         Args:
- 566:             data (pd.DataFrame): Data with engineered features
- 567:             
- 568:         Returns:
- 569:             Dict[str, Any]: Summary of features created
- 570:         """
- 571:         summary = {
- 572:             'total_features': len(data.columns),
- 573:             'feature_types': {},
- 574:             'missing_values': {},
- 575:             'feature_categories': {
- 576:                 'lag_features': [],
- 577:                 'rolling_features': [],
- 578:                 'seasonal_features': [],
- 579:                 'economic_indicators': []
- 580:             }
- 581:         }
- 582:         
- 583:         # Categorize features
- 584:         for col in data.columns:
- 585:             if '_lag_' in col:
- 586:                 summary['feature_categories']['lag_features'].append(col)
- 587:             elif any(keyword in col for keyword in ['_ma_', '_std_', '_min_', '_max_']):
- 588:                 summary['feature_categories']['rolling_features'].append(col)
- 589:             elif any(keyword in col for keyword in ['month', 'quarter', 'seasonal', 'sin', 'cos']):
- 590:                 summary['feature_categories']['seasonal_features'].append(col)
- 591:             elif any(keyword in col for keyword in ['_trend_', '_roc_', '_volatility_', '_cv_', 
- 592:                                                    '_position_', '_deviation_', '_zscore_', '_acceleration']):
- 593:                 summary['feature_categories']['economic_indicators'].append(col)
- 594:         
- 595:         # Feature type analysis
- 596:         summary['feature_types'] = {
- 597:             'numeric': len(data.select_dtypes(include=[np.number]).columns),
- 598:             'categorical': len(data.select_dtypes(include=['object', 'category']).columns),
- 599:             'datetime': len(data.select_dtypes(include=['datetime64']).columns)
- 600:         }
- 601:         
- 602:         # Missing values analysis
- 603:         missing_counts = data.isnull().sum()
- 604:         summary['missing_values'] = {
- 605:             'total_missing': missing_counts.sum(),
- 606:             'columns_with_missing': missing_counts[missing_counts > 0].to_dict(),
- 607:             'missing_percentage': (missing_counts.sum() / data.size) * 100
- 608:         }
- 609:         
- 610:         # Feature category counts
- 611:         for category, features in summary['feature_categories'].items():
- 612:             summary[f'{category}_count'] = len(features)
- 613:         
- 614:         self.logger.info("Generated feature engineering summary")
- 615:         return summary
+ 509:         elif method == 'mutual_info':
+ 510:             if not _SKLEARN_AVAILABLE:
+ 511:                 self.logger.warning("sklearn not available: falling back to correlation method for mutual_info")
+ 512:                 return self.create_feature_selection_methods(data, target_column, 'correlation')
+ 513: 
+ 514:             # Use mutual information regression to score features
+ 515:             X = data[feature_columns].fillna(method='ffill').fillna(method='bfill').fillna(0)
+ 516:             y = data[target_column].values
+ 517:             try:
+ 518:                 mi = mutual_info_regression(X, y, discrete_features=False)
+ 519:                 mi_series = pd.Series(mi, index=feature_columns).sort_values(ascending=False)
+ 520:                 # Select features with MI greater than the median
+ 521:                 selected_features = mi_series[mi_series > mi_series.median()].index.tolist()
+ 522:                 if top_k is not None:
+ 523:                     selected_features = selected_features[:top_k]
+ 524:             except Exception as e:
+ 525:                 self.logger.warning(f"Mutual information computation failed: {e}. Falling back to correlation.")
+ 526:                 return self.create_feature_selection_methods(data, target_column, 'correlation')
+ 527: 
+ 528:         elif method == 'correlation_matrix':
+ 529:             # Remove multicollinear features above a threshold (default 0.9)
+ 530:             selected_features = self.select_features_correlation_threshold(data[feature_columns], threshold=0.9)
+ 531:             if top_k is not None:
+ 532:                 selected_features = selected_features[:top_k]
+ 533: 
+ 534:         elif method == 'model_based':
+ 535:             if not _SKLEARN_AVAILABLE:
+ 536:                 self.logger.error("sklearn not available: cannot perform model-based selection")
+ 537:                 return feature_columns
+ 538:             # Use a simple random forest selector
+ 539:             X = data[feature_columns].fillna(method='ffill').fillna(method='bfill').fillna(0)
+ 540:             y = data[target_column].values
+ 541:             selected_features = self.select_features_model_based(X, y)
+ 542:             if top_k is not None:
+ 543:                 selected_features = selected_features[:top_k]
+ 544: 
+ 545:         else:
+ 546:             self.logger.error(f"Unknown feature selection method: {method}")
+ 547:             return feature_columns
+ 548: 
+ 549:         self.logger.info(f"Selected {len(selected_features)} features using {method} method")
+ 550:         return selected_features
+ 551: 
+ 552:     def select_features_correlation_threshold(self, data: pd.DataFrame, threshold: float = 0.9) -> List[str]:
+ 553:         """
+ 554:         Drop features that are highly correlated with each other above a threshold.
+ 555: 
+ 556:         Keeps the feature with the highest variance among correlated pairs.
+ 557:         """
+ 558:         if data.shape[1] == 0:
+ 559:             return []
+ 560: 
+ 561:         corr_matrix = data.corr().abs()
+ 562:         upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+ 563:         to_drop = [column for column in upper.columns if any(upper[column] > threshold)]
+ 564: 
+ 565:         selected = [col for col in data.columns if col not in to_drop]
+ 566:         self.logger.info(f"Dropped {len(to_drop)} features with correlation above {threshold}")
+ 567:         return selected
+ 568: 
+ 569:     def select_features_model_based(self, X: pd.DataFrame, y: np.ndarray, 
+ 570:                                     model: Optional[Any] = None, threshold: Any = 'median') -> List[str]:
+ 571:         """
+ 572:         Model-based feature selection using SelectFromModel.
+ 573: 
+ 574:         By default uses a RandomForestRegressor to compute importances.
+ 575:         """
+ 576:         if model is None:
+ 577:             model = RandomForestRegressor(n_estimators=100, random_state=42)
+ 578: 
+ 579:         # Scale features to help some models (optional)
+ 580:         scaler = StandardScaler()
+ 581:         try:
+ 582:             X_scaled = scaler.fit_transform(X)
+ 583:         except Exception:
+ 584:             X_scaled = X.values
+ 585: 
+ 586:         try:
+ 587:             model.fit(X_scaled, y)
+ 588:             selector = SelectFromModel(model, threshold=threshold, prefit=True)
+ 589:             mask = selector.get_support()
+ 590:             selected = list(X.columns[mask])
+ 591:             self.logger.info(f"Model-based selection chose {len(selected)} features")
+ 592:             return selected
+ 593:         except Exception as e:
+ 594:             self.logger.warning(f"Model-based selection failed: {e}. Returning all features.")
+ 595:             return list(X.columns)
+ 596:     
+ 597:     def get_feature_summary(self, data: pd.DataFrame) -> Dict[str, Any]:
+ 598:         """
+ 599:         Generate summary of created features.
+ 600:         
+ 601:         Args:
+ 602:             data (pd.DataFrame): Data with engineered features
+ 603:             
+ 604:         Returns:
+ 605:             Dict[str, Any]: Summary of features created
+ 606:         """
+ 607:         summary = {
+ 608:             'total_features': len(data.columns),
+ 609:             'feature_types': {},
+ 610:             'missing_values': {},
+ 611:             'feature_categories': {
+ 612:                 'lag_features': [],
+ 613:                 'rolling_features': [],
+ 614:                 'seasonal_features': [],
+ 615:                 'economic_indicators': []
+ 616:             }
+ 617:         }
+ 618:         
+ 619:         # Categorize features
+ 620:         for col in data.columns:
+ 621:             if '_lag_' in col:
+ 622:                 summary['feature_categories']['lag_features'].append(col)
+ 623:             elif any(keyword in col for keyword in ['_ma_', '_std_', '_min_', '_max_']):
+ 624:                 summary['feature_categories']['rolling_features'].append(col)
+ 625:             elif any(keyword in col for keyword in ['month', 'quarter', 'seasonal', 'sin', 'cos']):
+ 626:                 summary['feature_categories']['seasonal_features'].append(col)
+ 627:             elif any(keyword in col for keyword in ['_trend_', '_roc_', '_volatility_', '_cv_', 
+ 628:                                                    '_position_', '_deviation_', '_zscore_', '_acceleration']):
+ 629:                 summary['feature_categories']['economic_indicators'].append(col)
+ 630:         
+ 631:         # Feature type analysis
+ 632:         summary['feature_types'] = {
+ 633:             'numeric': len(data.select_dtypes(include=[np.number]).columns),
+ 634:             'categorical': len(data.select_dtypes(include=['object', 'category']).columns),
+ 635:             'datetime': len(data.select_dtypes(include=['datetime64']).columns)
+ 636:         }
+ 637:         
+ 638:         # Missing values analysis
+ 639:         missing_counts = data.isnull().sum()
+ 640:         summary['missing_values'] = {
+ 641:             'total_missing': missing_counts.sum(),
+ 642:             'columns_with_missing': missing_counts[missing_counts > 0].to_dict(),
+ 643:             'missing_percentage': (missing_counts.sum() / data.size) * 100
+ 644:         }
+ 645:         
+ 646:         # Feature category counts
+ 647:         for category, features in summary['feature_categories'].items():
+ 648:             summary[f'{category}_count'] = len(features)
+ 649: 
+ 650:         # Count original (non-engineered) features
+ 651:         engineered_cols = set()
+ 652:         for features in summary['feature_categories'].values():
+ 653:             engineered_cols.update(features)
+ 654:         original_cols = [c for c in data.columns if c not in engineered_cols]
+ 655:         summary['original_features'] = len(original_cols)
+ 656:         
+ 657:         self.logger.info("Generated feature engineering summary")
+ 658:         return summary
+ 659: 
 
 ----------------------------------------
 FIN DEL ARCHIVO
